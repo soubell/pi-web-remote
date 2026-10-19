@@ -1,0 +1,10 @@
+[Unit]
+Description=Update DuckDNS A record for Pi Web (current public IP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# root で実行（IMDS へのアクセスは piweb ユーザーだけ遮断してある）
+ExecStart=/usr/local/bin/pi-web-duckdns-update
+RemainAfterExit=yes

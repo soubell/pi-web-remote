@@ -2,6 +2,8 @@
 Description=Pi Web (pi coding agent web UI)
 After=network-online.target
 Wants=network-online.target
+# DNS レコードを先に現在の IP に合わせてから Caddy / Pi Web を上げたい場合に備える
+Wants=pi-web-duckdns.service
 
 [Service]
 Type=simple
@@ -11,6 +13,8 @@ Group=piweb
 WorkingDirectory=/home/piweb
 # 秘密情報は EnvironmentFile に置く（chmod 600 / owner piweb）
 EnvironmentFile=/home/piweb/.config/pi-web/env
+# 起動のたびに DuckDNS を現在のパブリック IP に更新（"+" で root 実行、"−" で失敗を無視）
+ExecStartPre=-+/usr/local/bin/pi-web-duckdns-update
 ExecStart=/usr/bin/npx --yes @agegr/pi-web@latest -H 127.0.0.1 -p 30141 --no-open
 Restart=on-failure
 RestartSec=3

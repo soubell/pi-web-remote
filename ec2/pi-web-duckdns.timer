@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically update DuckDNS A record for Pi Web
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+# 起動直後に1回 + 以後5分ごと（stop/start でパブリック IP が変わっても追従する）
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=pi-web-duckdns.service
+
+[Install]
+WantedBy=timers.target

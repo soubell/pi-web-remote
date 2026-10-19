@@ -80,45 +80,72 @@ sudo install -d -o piweb -g piweb /home/piweb/.config/pi-web
 
 ---
 
-## 3. デプロイ
+## 3. デプロイ（設定は `.env` 1枚だけ）
 
 ```bash
 git clone https://github.com/soubell/pi-web-remote.git
-cd pi-web-remote/duckdns
-./setup.sh                 # DuckDNS ドメイン / token / Basic 認証 → .env.caddy
+cd pi-web-remote/ec2
 
-cd ../ec2
-sudo ./install.sh          # DuckDNS 自動更新フック + systemd ユニットを配置
+cp .env.example .env
+nano .env          # ↓ の6行を埋めるだけ
+
+sudo ./install.sh  # 3か所に配布 + systemd 配置 + 初回 DuckDNS 更新まで一括
 ```
 
-`install.sh` がやること:
+### `ec2/.env` に書くもの
 
-| 配置物 | 役割 |
+```dotenv
+DUCKDNS_DOMAIN=mypi.duckdns.org
+DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ACME_EMAIL=you@example.com
+BASIC_AUTH_USER=pi
+BASIC_AUTH_PASSWORD=（32文字ランダム）
+PI_WEB_PASSWORD=（別の32文字ランダム）
+```
+
+| キー | 説明 |
 | --- | --- |
-| `/etc/pi-web/duckdns.env` (600) | DuckDNS のドメインとトークン |
-| `/usr/local/bin/pi-web-duckdns-update` | 現在のパブリック IP を取得して A レコードを更新 |
-| `pi-web-duckdns.timer` | 起動 30 秒後 + **5 分ごと** |
-| `pi-web.service` | `ExecStartPre` で更新 → Pi Web 起動 |
-| `caddy.service` | compose を systemd 管理（`After=pi-web-duckdns.service`） |
-
-続いて Pi Web の秘密情報と起動:
+| `DUCKDNS_DOMAIN` | DuckDNS で作ったドメイン。`PI_WEB_ALLOWED_HOSTS` にも自動で入る |
+| `DUCKDNS_TOKEN` | duckdns.org のトークン（A レコード更新と DNS-01 の両方に使う） |
+| `ACME_EMAIL` | Let's Encrypt の登録メール（空でも可） |
+| `BASIC_AUTH_USER` | Caddy の Basic 認証ユーザー（省略時 `pi`） |
+| `BASIC_AUTH_PASSWORD` | **平文で書く**。install.sh が bcrypt に変換して配る |
+| `PI_WEB_PASSWORD` | Pi Web のログインパスワード。Basic 認証とは別の値にする |
 
 ```bash
-sudo tee /home/piweb/.config/pi-web/env >/dev/null <<EOF
-PI_WEB_PASSWORD=$(openssl rand -base64 32)
-PI_WEB_ALLOWED_HOSTS=mypi.duckdns.org
-PI_WEB_IDLE_TIMEOUT_MS=0
-PI_WEB_NO_OPEN=1
-EOF
-sudo chown piweb:piweb /home/piweb/.config/pi-web/env
-sudo chmod 600 /home/piweb/.config/pi-web/env
+# パスワードを作る
+openssl rand -base64 32
+```
 
+### `install.sh` が配る先
+
+```
+ec2/.env
+   ├─► duckdns/.env.caddy              (600) Caddy / docker compose の env_file
+   ├─► /etc/pi-web/duckdns.env         (600) DuckDNS 更新（root 実行）
+   └─► /home/piweb/.config/pi-web/env  (600, piweb 所有) Pi Web / systemd
+```
+
+`ec2/.env` 自体も `chmod 600` にし、Git 管理外（`.gitignore` 済み）。
+**値を変えたいときは `.env` を直して `sudo ./install.sh` を再実行**するだけでよい。
+
+配布だけ確認したいとき（書き込まない）:
+
+```bash
+./install.sh --dry-run     # 伏字で内容を表示
+```
+
+### 起動
+
+```bash
 sudo systemctl enable --now pi-web
 sudo systemctl enable --now caddy     # docker compose up -d --build 相当
 ```
 
 > `PI_WEB_PASSWORD` を後から確認したい場合は
 > `sudo cat /home/piweb/.config/pi-web/env`（root のみ）。
+>
+> `duckdns/setup.sh` は **EC2 では使わない**（`install.sh` が `.env.caddy` も作るため）。
 
 ---
 

@@ -26,8 +26,10 @@ MTOKEN="$(curl -sS -X PUT --max-time 2 \
   -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
   http://169.254.169.254/latest/api/token 2>/dev/null || true)"
 if [[ -n "$MTOKEN" ]]; then
-  IP="$(curl -sS --max-time 2 -H "X-aws-ec2-metadata-token: $MTOKEN" \
+  CAND="$(curl -sS --max-time 2 -H "X-aws-ec2-metadata-token: $MTOKEN" \
     http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
+  # EC2 以外では "Resource not found..." のような文字列が返るので必ず検証する
+  [[ "$CAND" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && IP="$CAND"
 fi
 if [[ -z "$IP" ]]; then
   IP="$(curl -sS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"

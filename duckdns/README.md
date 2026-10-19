@@ -61,6 +61,11 @@ curl "https://www.duckdns.org/update?domains=mypi&token=<TOKEN>&ip="
 
 ## 2. セットアップ
 
+> **EC2 で動かす場合はこの手順を使わない。** `ec2/` の `install.sh` が
+> `ec2/.env` 1枚から `.env.caddy` も含めて配布する（→ `../ec2/README.md`）。
+> ここは「自宅サーバ / VPS で Pi Web を同じユーザーで動かす」場合の手順。
+
+
 ```bash
 cd duckdns
 ./setup.sh

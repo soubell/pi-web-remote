@@ -45,11 +45,30 @@ SUB="${DUCKDNS_DOMAIN%.duckdns.org}"
 [[ "$BASIC_AUTH_PASSWORD" != "$PI_WEB_PASSWORD" ]] || die "2 つのパスワードは別の値にしてください"
 id -u piweb &>/dev/null || die "ユーザー piweb がありません（user-data.sh か手動で作成してください）"
 
-# --- 1) bcrypt ハッシュを生成（Docker の caddy を使う） ----------------------
-command -v docker >/dev/null || die "docker が必要です（Caddy のハッシュ生成に使用）"
+# --- 1) bcrypt ハッシュを生成 ------------------------------------------------
+#   Docker を入れない構成（ネイティブ Caddy）でも動くよう、3 経路を順に試す:
+#     caddy(apt) → docker → htpasswd(apache2-utils)
 echo "[1/4] Basic 認証のハッシュを生成..."
-BASIC_AUTH_HASH="$(printf '%s' "$BASIC_AUTH_PASSWORD" | docker run -i --rm caddy:2.11 caddy hash-password | tr -d '\r')"
-[[ "$BASIC_AUTH_HASH" == \$2* ]] || die "ハッシュ生成に失敗: $BASIC_AUTH_HASH"
+hash_password() {
+  local pw="$1"
+  if command -v caddy >/dev/null 2>&1; then
+    printf '%s' "$pw" | caddy hash-password
+  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    printf '%s' "$pw" | docker run -i --rm caddy:2.11 caddy hash-password
+  else
+    if ! command -v htpasswd >/dev/null 2>&1; then
+      echo "  htpasswd を導入（apache2-utils）..."
+      apt-get update -qq >/dev/null 2>&1 || true
+      apt-get install -y -qq apache2-utils >/dev/null 2>&1 || true
+    fi
+    command -v htpasswd >/dev/null 2>&1 || die "bcrypt を作れません。caddy / docker / apache2-utils のいずれかを入れてください"
+    # htpasswd -B は $2y$ を返すので $2a$ に寄せる（Caddy が確実に解釈できる形式）
+    htpasswd -nbB -C 14 "${BASIC_AUTH_USER}" "$pw" | cut -d: -f2- | sed 's/^\$2y\$/$2a$/'
+  fi
+}
+
+BASIC_AUTH_HASH="$(hash_password "$BASIC_AUTH_PASSWORD" | tr -d '\r')"
+[[ "$BASIC_AUTH_HASH" == \$2[aby]\$* ]] || die "ハッシュ生成に失敗: $BASIC_AUTH_HASH"
 ok "bcrypt 生成"
 
 if [[ $DRY_RUN -eq 1 ]]; then

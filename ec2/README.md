@@ -230,13 +230,22 @@ cd ../duckdns && docker compose up -d --build
 `duckdns/.env.caddy` は 600（clone したユーザー所有）のまま。Caddy は直接読まず、
 `install-caddy-native.sh` が 0640 の写しを作る。
 
-> **設定変更は `sudo ./install.sh` だけでよい。** 次の順で安全に反映される:
+> **設定変更は `sudo ./install.sh` だけでよい。** 2 フェーズで反映する:
 >
-> 1. 新しい設定を**一時ファイル**に書く
-> 2. `caddy validate` で検証（**失敗したら何も置き換えない**＝稼働中の設定はそのまま）
-> 3. 検証が通ったら `mv` で置換（atomic）
-> 4. `caddy-native` を再起動。**失敗したら元の設定に戻して**再起動を試みる
-> 5. `pi-web` も再起動して `EnvironmentFile` を読み直させる
+> **STAGE**（本番には触らない）
+>
+> 1. すべての設定を一時ディレクトリに生成する
+>    （`.env.caddy` / `duckdns.env` / Pi Web の env / Caddy の env と Caddyfile）
+> 2. その一時ファイルに対して `caddy validate`
+> 3. `caddy-native.service` があるのに `caddy` コマンドが無い場合は**ここで中止**
+>    （検証できない設定は配置しない = fail-closed）
+>
+> **COMMIT**（STAGE がすべて通ってから）
+>
+> 4. 各ファイルを退避（`.bak`）してから置き換える
+> 5. `caddy-native` → `pi-web` の順に再起動して `EnvironmentFile` を読み直させる
+> 6. **どれかが失敗したら、置き換えた全ファイルを一括で元に戻す**
+>    （一部だけ新しい設定が残る状態にしない）
 >
 > `EnvironmentFile` はプロセス起動時にしか読まれないため、ファイルを書き換えただけでは
 > 稼働中の Pi Web に反映されない（パスワード変更が効かない等）。

@@ -80,7 +80,11 @@ on_http_request:
             - "pi-user:パスワード"
 ```
 
+- `BASIC_USER` は `^[A-Za-z0-9._-]{1,32}$` のみ（YAML と curl 設定の両方に埋め込むため）
 - `NGROK_BASIC_PASSWORD` に 空白・`"`・`\`・`:` は使えない（`user:pass` 形式や curl 設定ファイルが壊れる）
+- HTTP コードが取れていても **curl の終了コードが非 0 なら成功扱いにしない**（再試行する）
+- 後始末（ngrok / Pi Web の停止、一時ファイル削除）は `EXIT`/`INT`/`TERM` すべてで
+  同一の `cleanup` に集約し、二重実行しても安全にしてある
 - 認証情報は **コマンドライン引数に載せない**。所有者のみ読める一時ファイルを作り
   `curl --config` で渡す（`ps` に現れない）
 - 待ち時間 (`READY_TIMEOUT` / `VERIFY_TIMEOUT`) は**ループ回数ではなく経過秒**で管理している。

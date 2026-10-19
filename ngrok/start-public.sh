@@ -23,15 +23,22 @@ command -v ngrok >/dev/null || { echo "ngrok が見つかりません: https://n
 PUBLIC_HOST="${PUBLIC_HOST#https://}"; PUBLIC_HOST="${PUBLIC_HOST%%/*}"
 
 POLICY_FILE=""
+CURL_CFG=""
 PI_WEB_PID=""
 NGROK_PID=""
+CLEANED=0
 
+# EXIT / INT / TERM のすべてで、後始末をここに集約する（trap を上書きしない）
 cleanup() {
+  [[ "$CLEANED" -eq 1 ]] && return 0      # シグナルで複数回呼ばれても安全に
+  CLEANED=1
   echo -e "\n[stop] 終了処理中..."
   [[ -n "$NGROK_PID"  ]] && kill "$NGROK_PID"  2>/dev/null || true
   [[ -n "$PI_WEB_PID" ]] && kill "$PI_WEB_PID" 2>/dev/null || true
   if command -v pi-web >/dev/null 2>&1; then pi-web stop --port "$PORT" >/dev/null 2>&1 || true; fi
   [[ -n "$POLICY_FILE" ]] && rm -f "$POLICY_FILE"
+  [[ -n "$CURL_CFG"    ]] && rm -f "$CURL_CFG"
+  return 0
 }
 trap cleanup EXIT INT TERM
 
@@ -67,6 +74,9 @@ NGROK_ARGS=(http "$PORT" --url "https://${PUBLIC_HOST}")
 VERIFY_AUTH=0
 
 if [[ -n "${NGROK_BASIC_PASSWORD:-}" ]]; then
+  # YAML / curl 設定ファイルの両方に埋め込むので、形式を厳密に縛る
+  [[ "$BASIC_USER" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || {
+    echo "BASIC_USER の形式が不正です（英数字・.・_・- の 1〜32 文字）: $BASIC_USER" >&2; exit 1; }
   # "user:password" 形式で渡すため、区切り文字と curl 設定ファイルを壊す文字を禁止
   [[ "$NGROK_BASIC_PASSWORD" =~ [[:space:]\"\\\:] ]] && {
     echo "NGROK_BASIC_PASSWORD に 空白・\"・\\・: は使えません" >&2; exit 1; }
@@ -112,6 +122,14 @@ probe() {
   printf '%s %s' "$rc" "$code"
 }
 
+# 取得できた応答を「信頼してよいか」の判定。
+#   curl が終了コード非 0 でも 3 桁のコードを返すことはあるが（転送の途中終了など）、
+#   認証の有効性を判断する材料としては不十分なので、再試行扱いにする。
+#   例外: 28（--max-time 超過）以外でコードが取れている場合も、ここでは安全側に倒す。
+usable() {   # <rc> <code>
+  [[ "$1" == "0" && "$2" =~ ^[0-9]{3}$ && "$2" != "000" ]]
+}
+
 probe_auth_header() {
   # 未認証で叩き、WWW-Authenticate ヘッダが付いていれば成功(=0)
   curl -s -o /dev/null -D - --max-time 5 "$@" 2>/dev/null \
@@ -128,14 +146,15 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
       echo; echo "ngrok が終了しました。" >&2; cat /tmp/pi-web-ngrok.log >&2; exit 1
     fi
     read -r RC UNAUTH <<<"$(probe "$PUBLIC_URL")"
-    # 接続不能(000) と 5xx は「まだ準備できていない」として再試行
-    case "$UNAUTH" in 000|5??) echo -n "."; sleep 2; continue ;; esac
+    # curl が正常終了していない / 接続不能(000) / 5xx は「まだ準備できていない」として再試行
+    if ! usable "$RC" "$UNAUTH"; then echo -n "."; sleep 2; continue; fi
+    case "$UNAUTH" in 5??) echo -n "."; sleep 2; continue ;; esac
     break
   done
   echo
 
-  if [[ "$UNAUTH" == "000" ]]; then
-    echo "      NG: ${VERIFY_TIMEOUT} 秒待っても公開 URL に接続できませんでした。中止します。" >&2
+  if ! usable "$RC" "$UNAUTH"; then
+    echo "      NG: ${VERIFY_TIMEOUT} 秒待っても有効な応答が得られませんでした (curl rc=${RC} / HTTP ${UNAUTH})。中止します。" >&2
     cat /tmp/pi-web-ngrok.log >&2
     exit 1
   fi
@@ -172,17 +191,17 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
   CURL_CFG="$(mktemp -t pi-web-curl.XXXXXX)"
   chmod 600 "$CURL_CFG"
   printf 'user = "%s:%s"\n' "$BASIC_USER" "$NGROK_BASIC_PASSWORD" > "$CURL_CFG"
-  trap 'rm -f "$CURL_CFG"' EXIT
 
   echo -n "      認証ありで疎通確認"
   AUTH="000"
   VERIFY_DEADLINE=$(( SECONDS + VERIFY_TIMEOUT ))
   while (( SECONDS < VERIFY_DEADLINE )); do
     read -r RC AUTH <<<"$(probe --config "$CURL_CFG" "$PUBLIC_URL")"
-    case "$AUTH" in 000|5??) echo -n "."; sleep 2; continue ;; esac
+    if ! usable "$RC" "$AUTH"; then echo -n "."; sleep 2; continue; fi
+    case "$AUTH" in 5??) echo -n "."; sleep 2; continue ;; esac
     break
   done
-  rm -f "$CURL_CFG"
+  rm -f "$CURL_CFG"; CURL_CFG=""
   echo
   case "$AUTH" in
     200|30?|307|308)

@@ -55,4 +55,4 @@ PUBLIC_HOST='xxxx.ngrok-free.app' \
 
 - 無料プランの警告ページは消せない（消すなら有料プラン）
 - URL とパスワードを知る人は、あなたの権限でコマンドを実行できる
-- 常用するなら `../caddy-github-oauth/` か Cloudflare Tunnel + Access に移行する
+- 常用するなら `../duckdns/` か Cloudflare Tunnel + Access に移行する

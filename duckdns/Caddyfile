@@ -1,0 +1,46 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+# 例: mypi.duckdns.org
+{$DUCKDNS_DOMAIN} {
+	# DuckDNS の API で TXT を書き換える DNS-01。ポート80を開けずに済む
+	tls {
+		dns duckdns {$DUCKDNS_API_TOKEN}
+		propagation_delay 30s
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format console
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# --- 任意: IP 制限（自宅・社内だけに絞る場合に有効化。要: trusted_proxies 設定なしの直公開前提）
+	# @notme not remote_ip 203.0.113.0/24 198.51.100.0/24
+	# respond @notme 403
+
+	# 第2層の認証（Pi Web のパスワードとは別の値にする）
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# SSE（ストリーミング応答）をバッファリングしない
+	reverse_proxy {$PI_WEB_UPSTREAM} {
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+}

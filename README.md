@@ -6,7 +6,7 @@
 
 > ⚠️ Pi Web は **エージェントが bash を実行できる** UI であり、認証はパスワード1個だけ、
 > 通信は平文 HTTP。要するに「公開した瞬間、URL とパスワードを知る人はあなたの権限で
-> 何でもできる」。どの構成でも **前段の認証（OAuth / Basic / VPN）を必ず重ねる**こと。
+> 何でもできる」。どの構成でも **前段の認証（Basic 認証 / VPN）を必ず重ねる**こと。
 
 ---
 
@@ -31,12 +31,12 @@ curl -s https://ifconfig.me; echo
 
 ## 方式の比較
 
-| | A: DuckDNS + Caddy + GitHub OAuth | B: Cloudflare Tunnel + Access | C: ngrok + Basic 認証 |
+| | A: DuckDNS + Caddy + Basic 認証 | B: Cloudflare Tunnel + Access | C: ngrok + Basic 認証 |
 | --- | --- | --- | --- |
-| 置き場所 | `caddy-github-oauth/` | （今後追加予定） | `ngrok/` |
+| 置き場所 | `duckdns/` | （今後追加予定） | `ngrok/` |
 | ポート開放 | **必要（443）** | 不要 | 不要 |
 | CGNAT | ❌ 不可 | ✅ 可 | ✅ 可 |
-| 認証 | GitHub ログイン | Google/GitHub ログイン | Basic 認証 |
+| 認証 | Basic 認証（+ 任意で IP 制限） | Google/GitHub ログイン | Basic 認証 |
 | ドメイン | DuckDNS（無料） | 自前ドメイン必要 | 不要（`*.ngrok-free.app`） |
 | 帯域 | 回線次第 | 無制限（無料） | 1GB/月（無料） |
 | HTTPS | Let's Encrypt | Cloudflare | ngrok |
@@ -50,9 +50,9 @@ curl -s https://ifconfig.me; echo
 ## ディレクトリ
 
 ```
-caddy-github-oauth/   DuckDNS + Caddy(DNS-01) + oauth2-proxy(GitHub)   … 方式A
-ngrok/                ngrok + Basic 認証 + Pi Web パスワード            … 方式C
-agent/                systemd ユーザーサービス（Pi Web の常駐化）
+duckdns/   DuckDNS + Caddy（Let's Encrypt DNS-01）+ Basic 認証   … 方式A
+ngrok/     ngrok + Basic 認証 + Pi Web パスワード                 … 方式C
+agent/     systemd ユーザーサービス（Pi Web の常駐化）
 ```
 
 ---
@@ -64,13 +64,12 @@ agent/                systemd ユーザーサービス（Pi Web の常駐化）
 - 前段が送ってくるホスト名を `PI_WEB_ALLOWED_HOSTS` に**完全一致**で追加（忘れると 403）
 - `PI_WEB_IDLE_TIMEOUT_MS=0`（既定 10 分で勝手に落ちるのを防ぐ）
 - Pi Web のパスワードは前段の認証とは**別の値**にする（`openssl rand -base64 32`）
-- アイドルで落としたい場合は既定値のままにする
 
 ## 秘密情報の扱い
 
-- `.env` / `.env.*` / `*.pem` / `password` などは `.gitignore` 済み
+- `.env` / `.env.*` / `*.pem` / `password` / `policy.yml` は `.gitignore` 済み
 - リポジトリにコミットするのは **`.example` 雛形だけ**
-- 漏れた疑いがあれば、パスワード変更 → cookie secret 再生成 → 証明書・トンネル再作成
+- 漏れた疑いがあれば、パスワード変更 → cookie secret 等の再生成 → 証明書・トンネル再作成
 
 ## 参考
 

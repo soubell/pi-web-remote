@@ -60,7 +60,11 @@ PI_WEB_IDLE_TIMEOUT_MS="${PI_WEB_IDLE_TIMEOUT_MS:-0}"
 PI_WEB_UPSTREAM="${PI_WEB_UPSTREAM:-127.0.0.1:30141}"
 SUB="${DUCKDNS_DOMAIN%.duckdns.org}"
 
-[[ "$DUCKDNS_DOMAIN" == *".duckdns.org" ]] || die "DUCKDNS_DOMAIN は *.duckdns.org にしてください"
+# 生成物は root が読み、シェルスクリプトが値を参照する。形式を厳格に縛る
+[[ "$DUCKDNS_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.duckdns\.org$ ]] || \
+  die "DUCKDNS_DOMAIN の形式が不正: $DUCKDNS_DOMAIN（例: mypi.duckdns.org / 小文字英数字とハイフンのみ）"
+[[ "$DUCKDNS_TOKEN" =~ ^[A-Za-z0-9-]{8,64}$ ]] || \
+  die "DUCKDNS_TOKEN の形式が不正（8〜64 文字の英数字とハイフン）"
 [[ ${#BASIC_AUTH_PASSWORD} -ge 12 ]] || die "BASIC_AUTH_PASSWORD は 12 文字以上にしてください"
 [[ ${#PI_WEB_PASSWORD}   -ge 16 ]] || die "PI_WEB_PASSWORD は 16 文字以上にしてください"
 [[ "$BASIC_AUTH_PASSWORD" != "$PI_WEB_PASSWORD" ]] || die "2 つのパスワードは別の値にしてください"
@@ -92,11 +96,18 @@ hash_password() {
   fi
 }
 
-BASIC_AUTH_HASH="$(hash_password "$BASIC_AUTH_PASSWORD" | tr -d '\r')"
-[[ "$BASIC_AUTH_HASH" == \$2[aby]\$* ]] || die "ハッシュ生成に失敗: $BASIC_AUTH_HASH"
-ok "bcrypt 生成"
+if [[ $DRY_RUN -eq 1 ]]; then
+  # dry-run は「何も書き込まず、何も導入しない」。ハッシュ生成は実環境で必要
+  BASIC_AUTH_HASH='$2a$14$<dry-run では生成しません>'
+  ok "bcrypt 生成はスキップ（--dry-run）"
+else
+  BASIC_AUTH_HASH="$(hash_password "$BASIC_AUTH_PASSWORD" | tr -d '\r')"
+  [[ "$BASIC_AUTH_HASH" == \$2[aby]\$* ]] || die "ハッシュ生成に失敗: $BASIC_AUTH_HASH"
+  ok "bcrypt 生成"
+fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
+  echo "[dry-run] このモードでは書き込み・パッケージ導入・イメージ取得を行いません"
   cat <<EOF
 [dry-run] 以下を書き込む予定（パスワードは伏字）:
   ../duckdns/.env.caddy

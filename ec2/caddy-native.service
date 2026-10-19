@@ -6,20 +6,33 @@ After=pi-web-duckdns.service
 
 [Service]
 Type=simple
-# @REPO_DIR@ は install-caddy-native.sh が実パスに置換する
-EnvironmentFile=@REPO_DIR@/.env.caddy
-# 証明書・アカウント情報の保存先。/root/.local/share に置くと再構築で失い、
-# 再取得で Let's Encrypt のレート制限に当たるため明示する。
+# 443 へのバインドだけ capability で許可し、プロセスは専用ユーザーで動かす
+# （root で動かすと Caddy やその依存に脆弱性があった場合の影響が大きい）
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/pi-web/caddy.env
+# 証明書・アカウント情報の保存先。/root/.local/share だと再構築で失う
 Environment=XDG_DATA_HOME=/var/lib/caddy
 Environment=XDG_CONFIG_HOME=/var/lib/caddy
-ExecStart=/usr/bin/caddy run --environ --config @REPO_DIR@/Caddyfile.native
-# Caddyfile.native は `admin off` なので `caddy reload`（Admin API 経由）は使えない。
+ExecStart=/usr/bin/caddy run --environ --config /etc/pi-web/Caddyfile
+# Caddyfile は `admin off` なので caddy reload（Admin API）は使えない。
 # 設定変更時は systemctl restart caddy-native する。
 Restart=on-failure
 RestartSec=3
-# 443 を直接使うので root で起動する（Caddy は自動で権限を落とす）
 LimitNOFILE=1048576
+
+# --- 権限まわりの設定 -------------------------------------------------------
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/caddy /var/log/caddy
 
 [Install]
 WantedBy=multi-user.target

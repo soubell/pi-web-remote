@@ -215,6 +215,24 @@ cd ../duckdns && docker compose up -d --build
 > ネイティブ版を使うなら `user-data.sh` の Docker 導入部分は不要になる
 > （`apt-get install -y docker-ce ...` の行を消してよい）。Node.js と Caddy だけで動く。
 
+### Caddy の実行権限と設定の置き場所
+
+ネイティブ版の Caddy は **専用ユーザー `caddy`** で動く（root ではない）。
+443 へのバインドだけを capability で許可している。
+
+| パス | 所有者 / 権限 | 用途 |
+| --- | --- | --- |
+| `/etc/pi-web/caddy.env` | `root:caddy` 0640 | `duckdns/.env.caddy` の写し（`caddy` が読めるように） |
+| `/etc/pi-web/Caddyfile` | root 0644 | `duckdns/Caddyfile.native` の写し |
+| `/var/lib/caddy` | `caddy:caddy` | 証明書・ACME アカウント（`XDG_DATA_HOME`） |
+| `/var/log/caddy` | `caddy:caddy` | アクセスログ |
+
+`duckdns/.env.caddy` は 600（clone したユーザー所有）のまま。Caddy は直接読まず、
+`install-caddy-native.sh` が 0640 の写しを作る。
+
+> 設定変更は `sudo ./install.sh && sudo systemctl restart caddy-native`。
+> `Caddyfile.native` は `admin off` なので `caddy reload` は使えない。
+
 ### 作業ディレクトリ（エージェントに触らせる場所）
 
 Pi Web は「選択した作業ディレクトリ」配下しかファイルブラウザで見せない。

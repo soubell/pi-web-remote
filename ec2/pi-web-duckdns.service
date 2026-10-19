@@ -7,4 +7,6 @@ Wants=network-online.target
 Type=oneshot
 # root で実行（IMDS へのアクセスは piweb ユーザーだけ遮断してある）
 ExecStart=/usr/local/bin/pi-web-duckdns-update
-RemainAfterExit=yes
+# RemainAfterExit は付けない: 付けるとユニットが active のまま残り、
+# タイマーが再度 start を要求しても「既に active」で何も実行されない
+# （= 5分ごとの更新が 2 回目以降走らない）。

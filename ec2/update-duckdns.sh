@@ -5,15 +5,31 @@
 set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-/etc/pi-web/duckdns.env}"
-if [[ -r "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-  set +a
-fi
+
+# 設定ファイルは「シェルとして実行」せず、データとして読む
+# （値を取り違えても任意コード実行にならない）
+read_env() {
+  local key="$1" line
+  [[ -r "$ENV_FILE" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == "$key="* ]] || continue
+    printf '%s' "${line#*=}"
+    return 0
+  done < "$ENV_FILE"
+}
+
+DUCKDNS_DOMAIN="$(read_env DUCKDNS_DOMAIN)"
+DUCKDNS_TOKEN="$(read_env DUCKDNS_TOKEN)"
 
 : "${DUCKDNS_DOMAIN:?DUCKDNS_DOMAIN が未設定（$ENV_FILE を確認）}"
 : "${DUCKDNS_TOKEN:?DUCKDNS_TOKEN が未設定（$ENV_FILE を確認）}"
+# 念のため再検証（生成元以外からの書き換えに備える）
+[[ "$DUCKDNS_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.duckdns\.org$ ]] || {
+  echo "[duckdns] DUCKDNS_DOMAIN の形式が不正: $DUCKDNS_DOMAIN" >&2; exit 1; }
+[[ "$DUCKDNS_TOKEN" =~ ^[A-Za-z0-9-]{8,64}$ ]] || {
+  echo "[duckdns] DUCKDNS_TOKEN の形式が不正" >&2; exit 1; }
 
 # DuckDNS API はサブドメイン部分だけを受け付ける
 SUB="${DUCKDNS_DOMAIN%.duckdns.org}"

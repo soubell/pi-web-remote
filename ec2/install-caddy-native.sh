@@ -30,7 +30,7 @@ if ! command -v caddy >/dev/null; then
 fi
 ok "$(caddy version | head -1)"
 
-# apt 版の既定サービスは 80/443 を掴むので止める（設定の配布より前に止める）
+# apt 版の既定サービス / Docker 版が 443 を掴むので止める
 if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
   systemctl disable --now caddy.service 2>/dev/null || true
 fi
@@ -44,12 +44,33 @@ fi
 [[ -f "$REPO_DIR/duckdns/.env.caddy" ]] || die "install.sh が .env.caddy を作れませんでした"
 
 echo "[3/4] caddy-native.service を配置..."
-# 証明書の保存先（XDG_DATA_HOME=/var/lib/caddy をユニットが使う）
-install -d -m 755 /var/lib/caddy
-if id -u caddy &>/dev/null; then chown caddy:caddy /var/lib/caddy; fi
-install -d -m 755 /var/log/caddy
-sed "s#@REPO_DIR@#${REPO_DIR}/duckdns#g" caddy-native.service > /etc/systemd/system/caddy-native.service
-chmod 644 /etc/systemd/system/caddy-native.service
+id -u caddy &>/dev/null || die "ユーザー caddy がありません（caddy パッケージの導入に失敗？）"
+
+# 設定は /etc/pi-web に集約する（caddy ユーザーから読めるようにするため）
+install -d -m 755 /etc/pi-web /var/lib/caddy /var/log/caddy
+chown caddy:caddy /var/lib/caddy /var/log/caddy
+# .env.caddy は 600 (clone したユーザー所有) なので、caddy が読める 0640 root:caddy の写しを作る
+install -m 640 -o root -g caddy "$REPO_DIR/duckdns/.env.caddy" /etc/pi-web/caddy.env
+install -m 644 "$REPO_DIR/duckdns/Caddyfile.native" /etc/pi-web/Caddyfile
+ok "/etc/pi-web/caddy.env（root:caddy 0640）"
+ok "/etc/pi-web/Caddyfile"
+
+# 起動前に設定を検証（壊れた Caddyfile で再起動ループに入るのを防ぐ）
+#   ※ `source` すると BASIC_AUTH_HASH の `$` が展開されて壊れるのでデータとして読む
+(
+  set -e
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" == *=* ]] || continue
+    k="${line%%=*}"; v="${line#*=}"
+    printf -v "$k" '%s' "$v"; export "${k?}"
+  done < /etc/pi-web/caddy.env
+  caddy validate --config /etc/pi-web/Caddyfile >/dev/null
+) || die "Caddyfile の検証に失敗しました（caddy validate を直接実行して確認）"
+ok "caddy validate"
+
+install -m 644 caddy-native.service /etc/systemd/system/caddy-native.service
 ok "/etc/systemd/system/caddy-native.service"
 
 echo "[4/4] 起動..."

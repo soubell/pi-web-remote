@@ -10,7 +10,19 @@ FAIL=0
 
 ENV_FILE=/etc/pi-web/duckdns.env
 DOMAIN=""
-[[ -r "$ENV_FILE" ]] && DOMAIN="$(. "$ENV_FILE" && echo "${DUCKDNS_DOMAIN:-}")"
+# source せずデータとして読む
+read_env() {
+  local key="$1" line
+  [[ -r "$ENV_FILE" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == "$key="* ]] || continue
+    printf '%s' "${line#*=}"
+    return 0
+  done < "$ENV_FILE"
+}
+DOMAIN="$(read_env DUCKDNS_DOMAIN)"
 
 echo "== 1. ランタイム =="
 NV="$(node --version 2>/dev/null | sed 's/^v//')" || NV=""
@@ -19,8 +31,13 @@ if [[ -n "$NV" ]] && [[ "$(printf '%s\n22.19.0\n' "$NV" | sort -V | head -1)" ==
 else
   ng "Node.js が 22.19.0 未満または未導入 (${NV:-なし})"
 fi
-if docker version >/dev/null 2>&1; then ok "docker"; else ng "docker が使えない（グループ/起動状態を確認）"; fi
-command -v caddy >/dev/null || ok "caddy はコンテナで動作（ホストには不要）"
+# Docker は「Docker 版 Caddy を使う場合のみ」必要。ネイティブ構成では不要
+if [[ -f /etc/systemd/system/caddy-native.service ]]; then
+  if command -v caddy >/dev/null 2>&1; then ok "caddy（ネイティブ）"; else ng "caddy コマンドが無い（install-caddy-native.sh を実行）"; fi
+  if docker version >/dev/null 2>&1; then ok "docker（未使用・あっても問題なし）"; else ok "docker なし（ネイティブ構成なので不要）"; fi
+else
+  if docker version >/dev/null 2>&1; then ok "docker"; else ng "docker が使えない（Docker 版 Caddy を使う構成です）"; fi
+fi
 
 echo
 echo "== 2. Pi Web =="
@@ -69,7 +86,15 @@ if [[ -n "$DOMAIN" ]]; then
   esac
   EXP="$(echo | openssl s_client -connect "$DOMAIN:443" -servername "$DOMAIN" 2>/dev/null \
         | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"
-  [[ -n "$EXP" ]] && ok "証明書の有効期限: $EXP" || warn "証明書を取得できていない（docker compose logs caddy を確認）"
+  if [[ -n "$EXP" ]]; then
+    ok "証明書の有効期限: $EXP"
+  else
+    if systemctl is-active --quiet caddy-native 2>/dev/null; then
+      warn "証明書を取得できていない（journalctl -u caddy-native を確認）"
+    else
+      warn "証明書を取得できていない（docker compose logs caddy を確認）"
+    fi
+  fi
 fi
 
 echo

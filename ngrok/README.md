@@ -42,6 +42,35 @@ PUBLIC_HOST='xxxx.ngrok-free.app' \
 | `PORT` | `30141` | Pi Web のローカルポート |
 | `PI_WEB_IDLE_TIMEOUT_MS` | `0` | アイドル自動終了を無効化 |
 
+## 起動時の安全確認（重要）
+
+`start-public.sh` は、Basic 認証を有効にした場合に **本当に認証が効いているか** を
+起動直後に確認する。未認証で `https://<host>/` を叩いて:
+
+| 応答 | 動作 |
+| --- | --- |
+| `401` / `403` | OK。そのまま公開を継続 |
+| `200` | **中止**（誰でも入れる状態なので公開しない） |
+| その他 | **中止**（ngrok のログを表示） |
+
+ngrok のバージョンによって Traffic Policy の書式が変わる可能性があるため、
+「設定したつもりで認証が効いていない」状態を防ぐための Fail-closed にしてある。
+
+ポリシーファイルは **Traffic Policy ドキュメント形式**（トップレベルが `on_http_request:`）で生成する。
+`version: 3 / endpoints:` で始まる「エージェント設定ファイル」形式と混在させないこと。
+
+```yaml
+on_http_request:
+  - actions:
+      - type: basic-auth
+        config:
+          credentials:
+            - "pi-user:パスワード"
+```
+
+- `NGROK_BASIC_PASSWORD` に `:` は使えない（`user:pass` 形式の区切りと衝突する）
+- Pi Web が 60 秒以内に応答しない場合は、ngrok を起動せずに中止する（`READY_TIMEOUT` で変更可）
+
 ## ハマりどころ
 
 | 症状 | 原因 / 対処 |

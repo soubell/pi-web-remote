@@ -1,0 +1,21 @@
+# 秘密情報（絶対にコミットしない）
+.env
+.env.*
+!.env.*.example
+*.pem
+*.key
+password
+policy.yml
+pi-web-tp.*.yml
+
+# 実行時に生成されるもの
+data/
+config/
+*.log
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+node_modules/

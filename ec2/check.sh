@@ -48,7 +48,15 @@ fi
 
 echo
 echo "== 4. Caddy / HTTPS =="
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx pi-web-caddy; then ok "caddy コンテナ稼働中"; else ng "caddy コンテナが動いていない (sudo systemctl status caddy)"; fi
+if systemctl is-active --quiet caddy-native 2>/dev/null; then
+  ok "caddy-native.service active（ネイティブ / Docker なし）"
+elif systemctl is-active --quiet caddy 2>/dev/null; then
+  ok "caddy.service active（Docker 版）"
+elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx pi-web-caddy; then
+  ok "caddy コンテナ稼働中（手動 compose）"
+else
+  ng "Caddy が動いていない（sudo systemctl status caddy-native / caddy）"
+fi
 if command -v ss >/dev/null; then
   ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}' && ok "443/tcp LISTEN" || ng "443/tcp が LISTEN していない"
 fi

@@ -25,8 +25,27 @@ fi
 ENV_FILE=".env"
 [[ -f "$ENV_FILE" ]] || die "$(pwd)/.env がありません。cp .env.example .env して値を入れてください"
 
-# shellcheck disable=SC1090
-set -a; . "./$ENV_FILE"; set +a
+# .env を自前でパースする（source しない）
+#   - CRLF（Windows での編集）に耐える
+#   - 値に空白が入っていても「command not found」で落ちず、後段の検証で弾ける
+#   - .env の中身がシェルとして実行される心配がない
+while IFS= read -r _line || [[ -n "$_line" ]]; do
+  _line="${_line%$'\r'}"
+  [[ "$_line" =~ ^[[:space:]]*(#|$) ]] && continue
+  _line="${_line#"${_line%%[![:space:]]*}"}"          # 先頭の空白を落とす
+  _line="${_line#export }"
+  [[ "$_line" == *=* ]] || continue
+  _key="${_line%%=*}"
+  _val="${_line#*=}"
+  _key="${_key//[[:space:]]/}"
+  [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+  if [[ "$_val" =~ ^\"(.*)\"$ ]] || [[ "$_val" =~ ^\'(.*)\'$ ]]; then
+    _val="${BASH_REMATCH[1]}"
+  else
+    _val="${_val%"${_val##*[![:space:]]}"}"            # 末尾の空白だけ落とす
+  fi
+  printf -v "$_key" '%s' "$_val"
+done < "$ENV_FILE"
 
 : "${DUCKDNS_DOMAIN:?DUCKDNS_DOMAIN が空です}"
 : "${DUCKDNS_TOKEN:?DUCKDNS_TOKEN が空です}"
@@ -37,12 +56,18 @@ BASIC_AUTH_USER="${BASIC_AUTH_USER:-pi}"
 ACME_EMAIL="${ACME_EMAIL:-acme@${DUCKDNS_DOMAIN}}"
 [[ "$ACME_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME_EMAIL の形式が不正: $ACME_EMAIL"
 PI_WEB_IDLE_TIMEOUT_MS="${PI_WEB_IDLE_TIMEOUT_MS:-0}"
+# Caddy から Pi Web への転送先。ネイティブ/ホスト実行前提で 127.0.0.1
+PI_WEB_UPSTREAM="${PI_WEB_UPSTREAM:-127.0.0.1:30141}"
 SUB="${DUCKDNS_DOMAIN%.duckdns.org}"
 
 [[ "$DUCKDNS_DOMAIN" == *".duckdns.org" ]] || die "DUCKDNS_DOMAIN は *.duckdns.org にしてください"
 [[ ${#BASIC_AUTH_PASSWORD} -ge 12 ]] || die "BASIC_AUTH_PASSWORD は 12 文字以上にしてください"
 [[ ${#PI_WEB_PASSWORD}   -ge 16 ]] || die "PI_WEB_PASSWORD は 16 文字以上にしてください"
 [[ "$BASIC_AUTH_PASSWORD" != "$PI_WEB_PASSWORD" ]] || die "2 つのパスワードは別の値にしてください"
+for _pw in "$BASIC_AUTH_PASSWORD" "$PI_WEB_PASSWORD"; do
+  [[ "$_pw" =~ [[:space:]\"\'\$\\\#\;] ]] && \
+    die "パスワードに空白・引用符・\$・#・; は使えません（systemd/Caddyfile が壊れます）。openssl rand -base64 32 を使ってください"
+done
 id -u piweb &>/dev/null || die "ユーザー piweb がありません（user-data.sh か手動で作成してください）"
 
 # --- 1) bcrypt ハッシュを生成 ------------------------------------------------
@@ -80,7 +105,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
     ACME_EMAIL=${ACME_EMAIL}
     BASIC_AUTH_USER=${BASIC_AUTH_USER}
     BASIC_AUTH_HASH=${BASIC_AUTH_HASH:0:7}***
-    PI_WEB_UPSTREAM=127.0.0.1:30141
+    PI_WEB_UPSTREAM=${PI_WEB_UPSTREAM}
   /etc/pi-web/duckdns.env
     DUCKDNS_DOMAIN=${DUCKDNS_DOMAIN}
     DUCKDNS_TOKEN=***
@@ -104,7 +129,7 @@ DUCKDNS_API_TOKEN=${DUCKDNS_TOKEN}
 ACME_EMAIL=${ACME_EMAIL}
 BASIC_AUTH_USER=${BASIC_AUTH_USER}
 BASIC_AUTH_HASH=${BASIC_AUTH_HASH}
-PI_WEB_UPSTREAM=127.0.0.1:30141
+PI_WEB_UPSTREAM=${PI_WEB_UPSTREAM}
 EOF
 # root が書くため、clone したユーザーが `docker compose` を直接叩けるよう所有権を戻す
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -157,7 +182,10 @@ chmod 600 ./.env
 echo "[3/4] systemd ユニットを配置..."
 install -m 755 update-duckdns.sh /usr/local/bin/pi-web-duckdns-update
 REPO_DIR="$(cd .. && pwd)"
-for u in pi-web-duckdns.service pi-web-duckdns.timer pi-web.service caddy.service; do
+UNITS=(pi-web-duckdns.service pi-web-duckdns.timer pi-web.service)
+# Docker が無いなら Docker 版の caddy.service は配置しない（混乱と起動失敗の元）
+if command -v docker >/dev/null 2>&1; then UNITS+=(caddy.service); fi
+for u in "${UNITS[@]}"; do
   [[ -f "$u" ]] || continue
   sed "s#@REPO_DIR@#${REPO_DIR}/duckdns#g" "$u" > "/etc/systemd/system/$u"
   chmod 644 "/etc/systemd/system/$u"
@@ -177,9 +205,13 @@ cat <<MSG
 
 完了。配布内容は ec2/.env の 1 ファイルが正である。
 
-次:
+次（Docker なし・推奨）:
+  sudo ./install-caddy-native.sh        # 初回のみ。Caddy を導入して証明書を取得
+  sudo systemctl enable --now pi-web
+  sudo ./check.sh
+
+次（Docker 版 Caddy を使う場合）:
   sudo systemctl enable --now pi-web caddy
-  systemctl status pi-web --no-pager
   docker compose -f ../duckdns/docker-compose.yml logs -f caddy
 
 確認:

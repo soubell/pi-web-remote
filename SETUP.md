@@ -73,10 +73,13 @@ openssl rand -base64 32    # パスワード生成（2回叩いて別々の値�
 ## ④ コマンド2つ叩く
 
 ```bash
-sudo ./install.sh               # .env を3か所に配布 + systemd 配置 + DuckDNS 初回更新
-sudo ./install-caddy-native.sh  # Caddy を apt で入れて TLS-ALPN-01 で証明書取得
+sudo ./install-caddy-native.sh  # Caddy 導入 + 設定配布 + systemd 配置 + 証明書取得
 sudo systemctl enable --now pi-web
+sudo ./check.sh                 # 問題がないか確認
 ```
+
+> `install-caddy-native.sh` は内部で `install.sh` を呼ぶ（`.env.caddy` が無い場合）。
+> Docker 版 Caddy を使う場合だけ、先に `sudo ./install.sh` を単独で実行する。
 
 これで、URL は **`https://mypi.duckdns.org`**（DuckDNS）、証明書は Let's Encrypt、
 入口は Basic 認証、その奥が Pi Web のログイン、という状態になる。

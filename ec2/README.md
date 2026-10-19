@@ -140,7 +140,10 @@ ec2/.env
 
 ```bash
 sudo systemctl enable --now pi-web
-sudo systemctl enable --now caddy     # docker compose build && up -d
+
+# Caddy はどちらか一方だけ
+sudo ./install-caddy-native.sh        # 推奨: ネイティブ（Docker なし）
+# sudo systemctl enable --now caddy   # Docker 版を使う場合のみ
 
 # 何が欠けているかを一発で確認
 sudo ./check.sh
@@ -185,8 +188,8 @@ Docker が必要な理由は **Caddy に DuckDNS プラグインを組み込む�
 ＝素の Caddy で済む。
 
 ```bash
-sudo ./install.sh              # .env.caddy などは共通で作られる
-sudo ./install-caddy-native.sh # apt の caddy + Caddyfile.native で起動（Docker 版は停止）
+sudo ./install-caddy-native.sh   # Caddy 導入 → 設定配布(install.sh) → 起動まで一括
+sudo systemctl enable --now pi-web
 ```
 
 | | Docker 版（DNS-01） | ネイティブ版（TLS-ALPN-01） |
@@ -312,7 +315,8 @@ curl -sI -u 'pi:<パスワード>' https://mypi.duckdns.org | head -1
 
 ```bash
 cd pi-web-remote && git pull
-sudo systemctl restart caddy       # Caddy（docker compose 再ビルド）
+sudo systemctl restart caddy-native  # ネイティブ（設定変更時。admin off なので reload 不可）
+# sudo systemctl restart caddy       # Docker 版を使っている場合
 sudo systemctl restart pi-web      # Pi Web（起動時に DuckDNS も更新される）
 ```
 

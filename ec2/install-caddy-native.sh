@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Docker を使わず、素の Caddy を apt で入れて動かす（EC2 / VPS 向け）
-#   前提: `sudo ./install.sh` 実行済み（.env.caddy が作られていること）
-#   証明書は TLS-ALPN-01 で取得するので、443 が外から到達できる必要がある
+#
+#   sudo ./install-caddy-native.sh
+#
+# これ 1 本で完結する:
+#   1. Caddy を導入（先に入れることで install.sh の bcrypt 生成が caddy を使える）
+#   2. .env.caddy が無ければ install.sh を実行（設定の配布 + systemd 配置）
+#   3. caddy-native.service を配置して起動（TLS-ALPN-01 で証明書取得）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -10,9 +15,9 @@ ok()  { echo "  ✓ $*"; }
 
 [[ $EUID -eq 0 ]] || die "sudo で実行してください: sudo $0"
 REPO_DIR="$(cd .. && pwd)"
-[[ -f "$REPO_DIR/duckdns/.env.caddy" ]] || die "duckdns/.env.caddy がありません。先に sudo ./install.sh を実行してください"
+[[ -f ./.env ]] || die "ec2/.env がありません。cp .env.example .env して値を入れてください"
 
-echo "[1/3] Caddy を公式リポジトリから導入..."
+echo "[1/4] Caddy を公式リポジトリから導入..."
 if ! command -v caddy >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
@@ -25,26 +30,29 @@ if ! command -v caddy >/dev/null; then
 fi
 ok "$(caddy version | head -1)"
 
-echo "[2/3] Caddyfile とユニットを配置..."
+# apt 版の既定サービスは 80/443 を掴むので止める（設定の配布より前に止める）
+if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+  systemctl disable --now caddy.service 2>/dev/null || true
+fi
+
+echo "[2/4] 設定の配布（install.sh）..."
+if [[ ! -f "$REPO_DIR/duckdns/.env.caddy" ]]; then
+  ( cd "$REPO_DIR/ec2" && ./install.sh )
+else
+  ok "../duckdns/.env.caddy は既にあり（install.sh 実行済み）"
+fi
+[[ -f "$REPO_DIR/duckdns/.env.caddy" ]] || die "install.sh が .env.caddy を作れませんでした"
+
+echo "[3/4] caddy-native.service を配置..."
+# 証明書の保存先（XDG_DATA_HOME=/var/lib/caddy をユニットが使う）
+install -d -m 755 /var/lib/caddy
+if id -u caddy &>/dev/null; then chown caddy:caddy /var/lib/caddy; fi
 install -d -m 755 /var/log/caddy
-install -d -o caddy -g caddy -m 755 /var/lib/caddy 2>/dev/null || true
-# ネイティブ版は Caddyfile.native を使う（Docker 版の Caddyfile は触らない）
 sed "s#@REPO_DIR@#${REPO_DIR}/duckdns#g" caddy-native.service > /etc/systemd/system/caddy-native.service
 chmod 644 /etc/systemd/system/caddy-native.service
 ok "/etc/systemd/system/caddy-native.service"
 
-# apt 版の既定サービスは 80/443 を掴むので止める
-if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
-  systemctl disable --now caddy.service 2>/dev/null || true
-fi
-# Docker 版が動いていたら止める（443 の取り合いを避ける）
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx pi-web-caddy; then
-  echo "  Docker 版 Caddy を停止..."
-  (cd "$REPO_DIR/duckdns" && docker compose down) || true
-  systemctl disable --now caddy.service 2>/dev/null || true
-fi
-
-echo "[3/3] 起動..."
+echo "[4/4] 起動..."
 systemctl daemon-reload
 systemctl enable --now caddy-native.service
 sleep 2
@@ -53,9 +61,16 @@ systemctl --no-pager --lines=5 status caddy-native.service || true
 DOMAIN="$(grep -E '^DUCKDNS_DOMAIN=' "$REPO_DIR/duckdns/.env.caddy" | cut -d= -f2-)"
 cat <<MSG
 
-完了。確認:
-  journalctl -u caddy-native -f      # 証明書取得のログ
-  curl -sI https://${DOMAIN} | head -1   # -> HTTP/2 401
+完了。次:
+  sudo systemctl enable --now pi-web
+  sudo ./check.sh
+
+確認:
+  journalctl -u caddy-native -f            # 証明書取得のログ
+  curl -sI https://${DOMAIN} | head -1     # -> HTTP/2 401
+
+設定を変えたとき（ec2/.env を編集後）:
+  sudo ./install.sh && sudo systemctl restart caddy-native pi-web
 
 Docker 版に戻す場合:
   sudo systemctl disable --now caddy-native

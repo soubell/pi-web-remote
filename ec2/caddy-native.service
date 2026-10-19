@@ -8,8 +8,13 @@ After=pi-web-duckdns.service
 Type=simple
 # @REPO_DIR@ は install-caddy-native.sh が実パスに置換する
 EnvironmentFile=@REPO_DIR@/.env.caddy
+# 証明書・アカウント情報の保存先。/root/.local/share に置くと再構築で失い、
+# 再取得で Let's Encrypt のレート制限に当たるため明示する。
+Environment=XDG_DATA_HOME=/var/lib/caddy
+Environment=XDG_CONFIG_HOME=/var/lib/caddy
 ExecStart=/usr/bin/caddy run --environ --config @REPO_DIR@/Caddyfile.native
-ExecReload=/usr/bin/caddy reload --config @REPO_DIR@/Caddyfile.native
+# Caddyfile.native は `admin off` なので `caddy reload`（Admin API 経由）は使えない。
+# 設定変更時は systemctl restart caddy-native する。
 Restart=on-failure
 RestartSec=3
 # 443 を直接使うので root で起動する（Caddy は自動で権限を落とす）

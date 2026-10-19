@@ -80,8 +80,11 @@ on_http_request:
             - "pi-user:パスワード"
 ```
 
-- `NGROK_BASIC_PASSWORD` に `:` は使えない（`user:pass` 形式の区切りと衝突する）
-- Pi Web が 60 秒以内に応答しない場合は、ngrok を起動せずに中止する（`READY_TIMEOUT` で変更可）
+- `NGROK_BASIC_PASSWORD` に 空白・`"`・`\`・`:` は使えない（`user:pass` 形式や curl 設定ファイルが壊れる）
+- 認証情報は **コマンドライン引数に載せない**。所有者のみ読める一時ファイルを作り
+  `curl --config` で渡す（`ps` に現れない）
+- 待ち時間 (`READY_TIMEOUT` / `VERIFY_TIMEOUT`) は**ループ回数ではなく経過秒**で管理している。
+  1 回の通信が遅くても、指定した秒数で打ち切られる
 
 ## ハマりどころ
 

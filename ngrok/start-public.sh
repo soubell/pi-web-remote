@@ -45,7 +45,9 @@ PI_WEB_PID=$!
 
 echo -n "      起動待ち"
 READY=0
-for _ in $(seq 1 "$READY_TIMEOUT"); do
+# ループ回数ではなく「開始時刻からの経過秒」で打ち切る（1回の試行時間に左右されない）
+READY_DEADLINE=$(( SECONDS + READY_TIMEOUT ))
+while (( SECONDS < READY_DEADLINE )); do
   if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/" 2>/dev/null; then READY=1; break; fi
   if ! kill -0 "$PI_WEB_PID" 2>/dev/null; then
     echo; echo "Pi Web のプロセスが終了しました（ログを確認してください）" >&2; exit 1
@@ -65,8 +67,9 @@ NGROK_ARGS=(http "$PORT" --url "https://${PUBLIC_HOST}")
 VERIFY_AUTH=0
 
 if [[ -n "${NGROK_BASIC_PASSWORD:-}" ]]; then
-  # "user:password" 形式で渡すため、区切り文字は使わせない
-  [[ "$NGROK_BASIC_PASSWORD" == *:* ]] && { echo "NGROK_BASIC_PASSWORD に ':' は使えません" >&2; exit 1; }
+  # "user:password" 形式で渡すため、区切り文字と curl 設定ファイルを壊す文字を禁止
+  [[ "$NGROK_BASIC_PASSWORD" =~ [[:space:]\"\\\:] ]] && {
+    echo "NGROK_BASIC_PASSWORD に 空白・\"・\\・: は使えません" >&2; exit 1; }
 
   # --traffic-policy-file は「Traffic Policy ドキュメント」を取る。
   # エンドポイント定義（version: 3 / endpoints: ...）と混ぜないこと。
@@ -119,7 +122,8 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
   PUBLIC_URL="https://${PUBLIC_HOST}/"
   echo -n "[4/4] 認証の効きを確認"
   UNAUTH="000"; RC=1
-  for _ in $(seq 1 "$VERIFY_TIMEOUT"); do
+  VERIFY_DEADLINE=$(( SECONDS + VERIFY_TIMEOUT ))
+  while (( SECONDS < VERIFY_DEADLINE )); do
     if ! kill -0 "$NGROK_PID" 2>/dev/null; then
       echo; echo "ngrok が終了しました。" >&2; cat /tmp/pi-web-ngrok.log >&2; exit 1
     fi
@@ -164,13 +168,21 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
   esac
 
   # (b) 正しい認証情報で Pi Web まで到達できるか（ここまで通って初めて「公開してよい」）
+  # 認証情報は argv に載せない（ps で見えないように、0600 の一時設定ファイルを -K で渡す）
+  CURL_CFG="$(mktemp -t pi-web-curl.XXXXXX)"
+  chmod 600 "$CURL_CFG"
+  printf 'user = "%s:%s"\n' "$BASIC_USER" "$NGROK_BASIC_PASSWORD" > "$CURL_CFG"
+  trap 'rm -f "$CURL_CFG"' EXIT
+
   echo -n "      認証ありで疎通確認"
   AUTH="000"
-  for _ in $(seq 1 "$VERIFY_TIMEOUT"); do
-    read -r RC AUTH <<<"$(probe -u "${BASIC_USER}:${NGROK_BASIC_PASSWORD}" "$PUBLIC_URL")"
+  VERIFY_DEADLINE=$(( SECONDS + VERIFY_TIMEOUT ))
+  while (( SECONDS < VERIFY_DEADLINE )); do
+    read -r RC AUTH <<<"$(probe --config "$CURL_CFG" "$PUBLIC_URL")"
     case "$AUTH" in 000|5??) echo -n "."; sleep 2; continue ;; esac
     break
   done
+  rm -f "$CURL_CFG"
   echo
   case "$AUTH" in
     200|30?|307|308)

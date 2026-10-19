@@ -230,10 +230,20 @@ cd ../duckdns && docker compose up -d --build
 `duckdns/.env.caddy` は 600（clone したユーザー所有）のまま。Caddy は直接読まず、
 `install-caddy-native.sh` が 0640 の写しを作る。
 
-> **設定変更は `sudo ./install.sh` だけでよい。** ネイティブ Caddy が導入済みなら、
-> `install.sh` が `/etc/pi-web/caddy.env` と `/etc/pi-web/Caddyfile` を同期し、
-> `caddy validate` を通したうえで `caddy-native` を再起動する。
+> **設定変更は `sudo ./install.sh` だけでよい。** 次の順で安全に反映される:
+>
+> 1. 新しい設定を**一時ファイル**に書く
+> 2. `caddy validate` で検証（**失敗したら何も置き換えない**＝稼働中の設定はそのまま）
+> 3. 検証が通ったら `mv` で置換（atomic）
+> 4. `caddy-native` を再起動。**失敗したら元の設定に戻して**再起動を試みる
+> 5. `pi-web` も再起動して `EnvironmentFile` を読み直させる
+>
+> `EnvironmentFile` はプロセス起動時にしか読まれないため、ファイルを書き換えただけでは
+> 稼働中の Pi Web に反映されない（パスワード変更が効かない等）。
 > `Caddyfile.native` は `admin off` なので `caddy reload`（Admin API）は使えない。
+>
+> Docker 版 Caddy を使っている場合、`env_file` の変更はコンテナ再作成が必要。
+> `install.sh` は `docker compose up -d` まで試みる（失敗時は手動実行を案内）。
 
 ### 作業ディレクトリ（エージェントに触らせる場所）
 

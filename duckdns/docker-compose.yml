@@ -1,24 +1,31 @@
 # Pi Web + Caddy（DuckDNS / Let's Encrypt / Basic 認証）
 #
 #   公開ポートは 443 のみ。80 は DNS-01 チャレンジなので不要。
-#   Pi Web はホスト側 127.0.0.1:30141 で動かす前提（extra_hosts 経由で届かせる）。
+#
+#   ※ network_mode: host を使う理由
+#      Pi Web は 127.0.0.1 にだけバインドしている。Docker のブリッジ経由
+#      （host.docker.internal）からは 127.0.0.1 に届かないため、Caddy を
+#      ホストのネットワーク名前空間で動かして 127.0.0.1:30141 に直接つなぐ。
+#      → Linux（EC2 / VPS / 自宅サーバ）前提。Docker Desktop では制約あり。
 services:
   caddy:
     build: .
     image: pi-web-caddy:local
     container_name: pi-web-caddy
     restart: unless-stopped
+    network_mode: host        # 443/tcp, 443/udp をホストで直接受ける（ports: 不要）
     env_file:
       - .env.caddy
-    ports:
-      - "443:443"
-      - "443:443/udp"     # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data  # 証明書。消すと再取得になり Let's Encrypt のレート制限に当たる
+      - caddy_data:/data      # 証明書。消すと再取得になり Let's Encrypt のレート制限に当たる
       - caddy_config:/config
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Pi Web が落ちている間に 502 を返し続けないよう、依存は緩く見るだけ
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   caddy_data:

@@ -33,7 +33,9 @@ set -a; . "./$ENV_FILE"; set +a
 : "${BASIC_AUTH_PASSWORD:?BASIC_AUTH_PASSWORD が空です}"
 : "${PI_WEB_PASSWORD:?PI_WEB_PASSWORD が空です}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-pi}"
-ACME_EMAIL="${ACME_EMAIL:-}"
+# Caddyfile の `email` は引数が必須なので、空なら妥当な値を合成する（Unicode 不可）
+ACME_EMAIL="${ACME_EMAIL:-acme@${DUCKDNS_DOMAIN}}"
+[[ "$ACME_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "ACME_EMAIL の形式が不正: $ACME_EMAIL"
 PI_WEB_IDLE_TIMEOUT_MS="${PI_WEB_IDLE_TIMEOUT_MS:-0}"
 SUB="${DUCKDNS_DOMAIN%.duckdns.org}"
 
@@ -59,7 +61,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
     ACME_EMAIL=${ACME_EMAIL}
     BASIC_AUTH_USER=${BASIC_AUTH_USER}
     BASIC_AUTH_HASH=${BASIC_AUTH_HASH:0:7}***
-    PI_WEB_UPSTREAM=host.docker.internal:30141
+    PI_WEB_UPSTREAM=127.0.0.1:30141
   /etc/pi-web/duckdns.env
     DUCKDNS_DOMAIN=${DUCKDNS_DOMAIN}
     DUCKDNS_TOKEN=***
@@ -83,8 +85,12 @@ DUCKDNS_API_TOKEN=${DUCKDNS_TOKEN}
 ACME_EMAIL=${ACME_EMAIL}
 BASIC_AUTH_USER=${BASIC_AUTH_USER}
 BASIC_AUTH_HASH=${BASIC_AUTH_HASH}
-PI_WEB_UPSTREAM=host.docker.internal:30141
+PI_WEB_UPSTREAM=127.0.0.1:30141
 EOF
+# root が書くため、clone したユーザーが `docker compose` を直接叩けるよう所有権を戻す
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+  chown "$SUDO_USER":"$(id -gn "$SUDO_USER")" ../duckdns/.env.caddy
+fi
 chmod 600 ../duckdns/.env.caddy
 ok "../duckdns/.env.caddy"
 
@@ -131,9 +137,11 @@ chmod 600 ./.env
 # --- 3) systemd ユニット ----------------------------------------------------
 echo "[3/4] systemd ユニットを配置..."
 install -m 755 update-duckdns.sh /usr/local/bin/pi-web-duckdns-update
+REPO_DIR="$(cd .. && pwd)"
 for u in pi-web-duckdns.service pi-web-duckdns.timer pi-web.service caddy.service; do
   [[ -f "$u" ]] || continue
-  install -m 644 "$u" /etc/systemd/system/"$u"
+  sed "s#@REPO_DIR@#${REPO_DIR}/duckdns#g" "$u" > "/etc/systemd/system/$u"
+  chmod 644 "/etc/systemd/system/$u"
   ok "/etc/systemd/system/$u"
 done
 systemctl daemon-reload

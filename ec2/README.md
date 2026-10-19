@@ -23,6 +23,7 @@ DuckDNS を更新して追従させる。
 | AMI | **Ubuntu 24.04 LTS** | docker / NodeSource の手順が素直 |
 | インスタンス | **t3.small (2GB)** 以上 | Caddy の自前ビルド（xcaddy）が 1GB だと OOM しがち。t3.micro なら swap 必須（`user-data.sh` が 2GB 作成） |
 | Elastic IP | **使わない** | 代わりに DuckDNS 自動更新（このページの主題） |
+| EBS | **20GB gp3 以上** | Docker イメージ + npx キャッシュで 8GB は窮屈 |
 | IAM ロール | **付けない** | エージェントが bash を実行できるため |
 
 **EIP なしのデメリット**（理解した上で選ぶ）:
@@ -139,8 +140,15 @@ ec2/.env
 
 ```bash
 sudo systemctl enable --now pi-web
-sudo systemctl enable --now caddy     # docker compose up -d --build 相当
+sudo systemctl enable --now caddy     # docker compose build && up -d
+
+# 何が欠けているかを一発で確認
+sudo ./check.sh
 ```
+
+`check.sh` は Node.js のバージョン / pi-web サービスの稼働 / **30141 が 127.0.0.1 のみか** /
+DuckDNS の A レコードが現在の IP か / 443 の待ち受け / 証明書の期限 /
+`https://<domain>` が 401 を返すか（＋任意で Basic 認証の通し）を点検する。
 
 ### モデルの設定（初回だけ・これが最後の手動設定）
 
@@ -169,6 +177,18 @@ systemd の `EnvironmentFile` 経由で Pi Web が読む。対応する変数名
 
 > 有効になったかは、UI のモデルピッカーにモデルが並ぶかで分かる。
 > 認証が無いと「モデルが 1 つも選べない」状態になる。
+
+### 作業ディレクトリ（エージェントに触らせる場所）
+
+Pi Web は「選択した作業ディレクトリ」配下しかファイルブラウザで見せない。
+`pi-web.service` の `WorkingDirectory=/home/piweb` なので、初期状態ではホームが対象。
+
+```bash
+sudo -u piweb mkdir -p /home/piweb/work && sudo -u piweb git -C /home/piweb/work init
+```
+
+UI から `work` を選択して使う。特定のリポジトリを対象にしたいなら clone してから選ぶ。
+**認証情報（`~/.ssh`, `~/.aws`）は `piweb` のホームに置かない**こと。
 
 ### データの場所
 
@@ -249,7 +269,8 @@ curl -sI -u 'pi:<パスワード>' https://mypi.duckdns.org | head -1
 | 更新が `KO` を返す | DuckDNS のトークン誤り。`/etc/pi-web/duckdns.env` を確認 |
 | 更新が「取得できませんでした」 | アウトバウンド 443 が塞がれている / NAT GW なしのプライベートサブネット |
 | `pi-web` が起動直後に落ちる | `journalctl -u pi-web -n 50`。Node 22 未満 / `PI_WEB_ALLOWED_HOSTS` 不一致 |
-| Caddy から Pi Web に届かない | `extra_hosts: host.docker.internal:host-gateway` と `ss -ltnp \| grep 30141` を確認 |
+| Caddy から Pi Web に届かない | `docker-compose.yml` が `network_mode: host` か確認（Pi Web は 127.0.0.1 のみ待ち受けのため、ブリッジ経由では届かない）。`ss -ltn \| grep 30141` が `127.0.0.1:30141` か |
+| 443 が使用中で Caddy が起動しない | `network_mode: host` はホストの 443 を直接使う。既存の nginx/apache を止めるか、`ss -ltnp \| grep :443` で占有元を確認 |
 
 ---
 

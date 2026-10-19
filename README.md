@@ -167,7 +167,7 @@ PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.ap
 [ブラウザ]
     │ HTTPS 443（SG / ルータで送信元制限）
     ▼
-[Caddy (Docker)]  Let's Encrypt 証明書（DNS-01 / DuckDNS API → 80 番不要）
+[Caddy (Docker, network_mode: host)]  Let's Encrypt 証明書（DNS-01 → 80 番不要）
     │             Basic 認証（第1層）
     │             flush_interval -1 / read_timeout 1h（SSE 対策）
     ▼
@@ -187,6 +187,8 @@ PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.ap
 | ストリーミング | SSE なのでプロキシでバッファリングしない（Caddy は `flush_interval -1`） |
 | 認証 | Basic 認証と Pi Web パスワードは**別の値**（`openssl rand -base64 32`） |
 | 専用ユーザー | エージェントはシェルを持つ。`~/.ssh` やクラウド資格情報を置かない |
+| Docker | Pi Web が 127.0.0.1 待ち受けなので Caddy は **`network_mode: host`**（ブリッジ経由では届かない） |
+| 作業ディレクトリ | Pi Web が見せるのは「選択した作業ディレクトリ」配下のみ。EC2 では `/home/piweb/work` などを作る |
 
 ---
 
@@ -222,6 +224,18 @@ agent/      汎用 systemd ユーザーサービス（EC2 では ec2/pi-web.serv
 - コミットするのは **`.example` 雛形だけ**。実値は生成物
 - 生成されるファイルはすべて `chmod 600`（`pi-web/env` は `piweb` 所有）
 - 漏れた疑いがあれば: パスワード変更 → `sudo ./install.sh` 再実行 → 必要なら証明書削除
+
+---
+
+## 動いているか確認する
+
+```bash
+sudo ./ec2/check.sh
+```
+
+Node.js のバージョン / Pi Web の稼働と待ち受けアドレス / DuckDNS の A レコード /
+443 の待ち受けと証明書の期限 / `https://<domain>` の 401（＋任意で Basic 認証の通し）
+を点検し、欠けている項目を列挙する。
 - EC2 では **IMDS を `piweb` から遮断**（`user-data.sh`）。エージェント経由で
   インスタンスメタデータを読まれないようにしている
 

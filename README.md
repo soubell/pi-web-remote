@@ -1,79 +1,211 @@
-# Pi Web を外部に公開する構成（テンプレート集）
+# Pi Web を外部から使う構成（テンプレート集）
 
-`pi coding agent` の Web UI である [Pi Web](https://github.com/agegr/pi-web) は
-標準では `127.0.0.1:30141` だけで待ち受ける。ここでは「外から使う」ための構成を、
-**安全側に倒した形**でまとめている。
+[Pi Web](https://github.com/agegr/pi-web)（`pi coding agent` の Web UI）は、標準では
+`127.0.0.1:30141` だけで待ち受け、認証はパスワード 1 個、通信は平文 HTTP。
+このリポジトリは、それを**外から安全に使うための構成**をまとめたもの。
 
-> ⚠️ Pi Web は **エージェントが bash を実行できる** UI であり、認証はパスワード1個だけ、
-> 通信は平文 HTTP。要するに「公開した瞬間、URL とパスワードを知る人はあなたの権限で
-> 何でもできる」。どの構成でも **前段の認証（Basic 認証 / VPN）を必ず重ねる**こと。
+> ⚠️ **前提の共有**
+> Pi Web はエージェントが `bash` を実行できる UI。つまり「公開した瞬間、URL と
+> パスワードを知る人はあなたの権限で何でもできる」。どの構成でも **前段の認証
+> （Basic 認証 / OAuth / VPN）を必ず重ねる**こと。
 
 ---
 
-## まず最初にやる: CGNAT 判定
+## まず 30 秒: どこで動かすか決める
 
-自宅回線で「ポート開放できるか」を 30 秒で確認する。ここで結論が変わる。
+| 環境 | ポート開放 | 推奨する方式 |
+| --- | --- | --- |
+| **EC2 / VPS** | SG で 443 を開けられる | **`ec2/`**（新規構築はこちら） |
+| 自宅サーバ | 開けられる（グローバル IP 直持ち） | `duckdns/` |
+| 自宅サーバ（CGNAT） | **開けられない** | `ngrok/` → 常用なら Cloudflare Tunnel / Tailscale |
+| 一時的に見せたい | 不要 | `ngrok/` |
+
+自宅回線が CGNAT かどうかは 30 秒で判定できる:
 
 ```bash
 curl -s https://ifconfig.me; echo
 ```
 
-ルータ管理画面の **WAN 側 IP** と比較:
-
-| 結果 | 意味 | 選ぶ方式 |
-| --- | --- | --- |
-| 一致 | グローバル IP を直接保有 | **方式A**（自前ドメイン）が使える |
-| 不一致（`100.64.*` / `10.*` / `172.16-31.*`） | **CGNAT**（IPv4 over IPv6 / MAP-E / DS-Lite） | **方式B**（トンネル）一択 |
-
-日本の光回線は CGNAT が多い（v6プラス、transix、NURO 等）。不一致なら方式Aは不可能。
+ルータ管理画面の **WAN 側 IP** と比較し、**違えば CGNAT**（`100.64.*` / `10.*` /
+`172.16-31.*` など）。日本の光回線（v6プラス / transix / NURO 等）は該当することが多い。
+その場合 `duckdns/` は使えない（何をしてもインバウンドが届かない）。
 
 ---
 
 ## 方式の比較
 
-| | A: DuckDNS + Caddy + Basic 認証 | B: Cloudflare Tunnel + Access | C: ngrok + Basic 認証 |
+| | `ec2/` | `duckdns/` | `ngrok/` |
 | --- | --- | --- | --- |
-| 置き場所 | `duckdns/` | （今後追加予定） | `ngrok/` |
-| ポート開放 | **必要（443）** | 不要 | 不要 |
-| CGNAT | ❌ 不可 | ✅ 可 | ✅ 可 |
-| 認証 | Basic 認証（+ 任意で IP 制限） | Google/GitHub ログイン | Basic 認証 |
-| ドメイン | DuckDNS（無料） | 自前ドメイン必要 | 不要（`*.ngrok-free.app`） |
-| 帯域 | 回線次第 | 無制限（無料） | 1GB/月（無料） |
-| HTTPS | Let's Encrypt | Cloudflare | ngrok |
-| 向く用途 | 固定IP・自分専用 | **常用（一番おすすめ）** | 一時的な確認 |
+| 想定環境 | EC2 / VPS | 自宅・VPS | どこでも（一時利用） |
+| ポート開放 | SG で 443 | ルータで 443 | 不要 |
+| CGNAT | ✅ 可 | ❌ 不可 | ✅ 可 |
+| ドメイン | DuckDNS（無料） | DuckDNS（無料） | `*.ngrok-free.app` |
+| HTTPS | Let's Encrypt（DNS-01） | Let's Encrypt（DNS-01） | ngrok |
+| 認証 | Basic 認証 + Pi Web パスワード | 同左 | 同左 |
+| IP 固定 | **不要**（起動時・5分ごとに DuckDNS 更新） | ルータ側で DDNS 更新 | — |
+| 制限 | インスタンス課金 | 回線次第 | 20k req/月・1GB/月 |
 
-**結論**: 常用するなら **方式B**。CGNAT でなく、自分しか使わず IP 制限もかけられるなら **方式A**。
-「5分だけ見せたい」なら **方式C**。
+**常用するなら `ec2/`**（設定は `.env` 1 枚、`install.sh` 一発）。
+CGNAT 環境や自前ドメインがあるなら **Cloudflare Tunnel + Access** が最も安定するが、
+本リポジトリには未収録。
+
+---
+
+## クイックスタート
+
+### EC2（推奨）
+
+```bash
+# 1) インスタンス: Ubuntu 24.04 / t3.small 以上 / IAM ロールなし / IMDSv2 必須
+#    ユーザーデータに ec2/user-data.sh を貼る（Docker・Node22・専用ユーザー piweb を作成）
+
+git clone https://github.com/soubell/pi-web-remote.git
+cd pi-web-remote/ec2
+cp .env.example .env && nano .env      # 6 項目を埋める
+sudo ./install.sh                      # 3 か所へ配布 + systemd 配置 + 初回 DuckDNS 更新
+
+sudo systemctl enable --now pi-web caddy
+```
+
+`ec2/.env` に書くのはこれだけ:
+
+```dotenv
+DUCKDNS_DOMAIN=mypi.duckdns.org
+DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ACME_EMAIL=you@example.com
+BASIC_AUTH_USER=pi
+BASIC_AUTH_PASSWORD=（32文字ランダム）
+PI_WEB_PASSWORD=（別の32文字ランダム）
+```
+
+`install.sh` が配る先:
+
+```
+ec2/.env
+   ├─► duckdns/.env.caddy              (600)  Caddy（証明書・Basic 認証・転送先）
+   ├─► /etc/pi-web/duckdns.env         (600)  DuckDNS 更新（root 実行）
+   └─► /home/piweb/.config/pi-web/env  (600)  Pi Web（piweb 所有）
+```
+
+- `PI_WEB_ALLOWED_HOSTS` は `DUCKDNS_DOMAIN` から自動生成
+- Basic 認証のパスワードは**平文で書いてよい**（bcrypt に変換して配布）
+- 変更したら `.env` を直して `sudo ./install.sh` を再実行（上書き配布）
+- 書き込みなしで確認: `./install.sh --dry-run`
+
+詳細と AWS 側の設定 → **[`ec2/README.md`](ec2/README.md)**
+
+### 自宅サーバ / VPS
+
+```bash
+cd pi-web-remote/duckdns
+./setup.sh                  # 対話: ドメイン / token / Basic 認証 → .env.caddy
+
+PI_WEB_PASSWORD='...' PI_WEB_ALLOWED_HOSTS='mypi.duckdns.org' \
+PI_WEB_IDLE_TIMEOUT_MS=0 PI_WEB_NO_OPEN=1 \
+  npx @agegr/pi-web@latest -H 127.0.0.1 -p 30141 --no-open
+
+docker compose up -d --build
+```
+
+詳細 → **[`duckdns/README.md`](duckdns/README.md)**
+
+### 一時的に見せたいだけ
+
+```bash
+cd pi-web-remote/ngrok
+PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.app' ./start-public.sh
+```
+
+詳細 → **[`ngrok/README.md`](ngrok/README.md)**
+
+---
+
+## 構成図（EC2 / duckdns 共通）
+
+```
+[ブラウザ]
+    │ HTTPS 443（SG / ルータで送信元制限）
+    ▼
+[Caddy (Docker)]  Let's Encrypt 証明書（DNS-01 / DuckDNS API → 80 番不要）
+    │             Basic 認証（第1層）
+    │             flush_interval -1 / read_timeout 1h（SSE 対策）
+    ▼
+[Pi Web 127.0.0.1:30141]  PI_WEB_PASSWORD（第2層）
+```
+
+---
+
+## 共通の前提と落とし穴
+
+| 項目 | 内容 |
+| --- | --- |
+| Node.js | **22.19.0 以上** |
+| 待ち受け | `-H 127.0.0.1`（外向きは Caddy だけ） |
+| ホスト検証 | `PI_WEB_ALLOWED_HOSTS` に**完全一致**でドメイン（忘れると 403） |
+| アイドル終了 | `PI_WEB_IDLE_TIMEOUT_MS=0`（既定 10 分で落ちる） |
+| ストリーミング | SSE なのでプロキシでバッファリングしない（Caddy は `flush_interval -1`） |
+| 認証 | Basic 認証と Pi Web パスワードは**別の値**（`openssl rand -base64 32`） |
+| 専用ユーザー | エージェントはシェルを持つ。`~/.ssh` やクラウド資格情報を置かない |
 
 ---
 
 ## ディレクトリ
 
 ```
-duckdns/   DuckDNS + Caddy（Let's Encrypt DNS-01）+ Basic 認証   … 方式A（自宅/VPS/EC2 共通）
-ec2/       EC2 デプロイ手順・cloud-init・systemd（設定は ec2/.env 1枚。/install.sh が配布）
-ngrok/     ngrok + Basic 認証 + Pi Web パスワード                 … 方式C（一時利用）
-agent/     systemd ユーザーサービス（汎用）
+ec2/        EC2 向け（.env 1枚 → install.sh が配布、EIP なしで DuckDNS 自動更新）
+  ├── .env.example            設定の雛形（これだけ編集する）
+  ├── install.sh              配布 + systemd 配置 + 初回更新（--dry-run あり）
+  ├── user-data.sh            cloud-init（Docker / Node22 / piweb ユーザー / swap / IMDS 遮断）
+  ├── update-duckdns.sh       パブリック IP → A レコード更新（root, 5分ごと）
+  ├── pi-web.service          ExecStartPre で DuckDNS 更新 → Pi Web 起動
+  ├── pi-web-duckdns.{service,timer}
+  └── caddy.service           compose を systemd 管理
+
+duckdns/    自宅サーバ / VPS 向け（Caddy + Basic 認証）
+  ├── Caddyfile  Dockerfile  docker-compose.yml
+  ├── setup.sh                対話で .env.caddy を生成
+  └── .env.caddy.example
+
+ngrok/      一時公開用
+  ├── start-public.sh         Pi Web + ngrok + Basic 認証をまとめて起動
+  └── README.md
+
+agent/      汎用 systemd ユーザーサービス（EC2 では ec2/pi-web.service を使用）
 ```
 
 ---
 
-## 共通の前提
-
-- Node.js 22.19.0 以上
-- Pi Web は **`127.0.0.1` にだけバインド**（`-H 127.0.0.1`）
-- 前段が送ってくるホスト名を `PI_WEB_ALLOWED_HOSTS` に**完全一致**で追加（忘れると 403）
-- `PI_WEB_IDLE_TIMEOUT_MS=0`（既定 10 分で勝手に落ちるのを防ぐ）
-- Pi Web のパスワードは前段の認証とは**別の値**にする（`openssl rand -base64 32`）
-
 ## 秘密情報の扱い
 
-- `.env` / `.env.*` / `*.pem` / `password` / `policy.yml` は `.gitignore` 済み
-- リポジトリにコミットするのは **`.example` 雛形だけ**
-- 漏れた疑いがあれば、パスワード変更 → cookie secret 等の再生成 → 証明書・トンネル再作成
+- `.env` / `.env.*` / `*.pem` / `*.key` / `password` / `policy.yml` は `.gitignore` 済み
+- コミットするのは **`.example` 雛形だけ**。実値は生成物
+- 生成されるファイルはすべて `chmod 600`（`pi-web/env` は `piweb` 所有）
+- 漏れた疑いがあれば: パスワード変更 → `sudo ./install.sh` 再実行 → 必要なら証明書削除
+- EC2 では **IMDS を `piweb` から遮断**（`user-data.sh`）。エージェント経由で
+  インスタンスメタデータを読まれないようにしている
+
+---
+
+## セキュリティ・チェックリスト
+
+- [ ] 443 以外を開けていない（80 / 30141 は不要）
+- [ ] 443 の送信元を自分の IP に制限（SG / ルータ / Caddy の `remote_ip`）
+- [ ] Basic 認証と Pi Web パスワードが別の値・32 文字ランダム
+- [ ] `PI_WEB_ALLOWED_HOSTS` が実際のドメインと完全一致
+- [ ] `docker compose logs caddy` に 401 の連発が出ていないか時々見る
+- [ ] Pi Web は専用ユーザーで実行、IAM ロールを付けない（EC2）
+- [ ] データ（`/home/piweb/.pi` と `pi-web/env`）のバックアップ
+
+---
 
 ## 参考
 
-- Pi Web README: https://github.com/agegr/pi-web
+- Pi Web 本体: https://github.com/agegr/pi-web
 - インタラクティブデモ（インストール不要）: https://agegr.github.io/pi-web/
-- Pi Web のリモート公開に関する注意: 同 README の "Remote Access"
+- リモート公開の注意（本家 README の "Remote Access"）
+- ngrok Traffic Policy: https://ngrok.com/docs/gateway/traffic-policy/examples/add-authentication
+- Caddy DuckDNS プラグイン: https://github.com/caddy-dns/duckdns
+
+## ライセンス
+
+本リポジトリの設定例は MIT。Pi Web 本体のライセンスは[本家](https://github.com/agegr/pi-web)に従う。

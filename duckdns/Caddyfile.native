@@ -1,0 +1,49 @@
+{
+	# ACME 登録メール（空だと Caddy が困るので必ず入れる）
+	email {$ACME_EMAIL}
+	admin off
+}
+
+# Docker なし版。DuckDNS のプラグインを使わず、**TLS-ALPN-01（443 のみ）** で証明書を取る。
+#   - 443 がインターネットから到達できるなら、これで十分（80 番も DNS トークンも不要）
+#   - 公式リポジトリの素の caddy バイナリで動く＝カスタムビルド不要
+#   - 逆に「80/443 が到達できない（CGNAT 等）」なら DNS-01 が必要 → Caddyfile（Docker 版）を使う
+{$DUCKDNS_DOMAIN} {
+	tls {
+		# TLS-ALPN-01 を使う（HTTP-01 を無効化して 80 番を一切使わない）
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format console
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# --- 任意: IP 制限（自宅・社内だけに絞る場合）
+	# @notme not remote_ip 203.0.113.0/24 198.51.100.0/24
+	# respond @notme 403
+
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	reverse_proxy {$PI_WEB_UPSTREAM} {
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+}

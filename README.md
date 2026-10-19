@@ -187,7 +187,7 @@ PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.ap
 | ストリーミング | SSE なのでプロキシでバッファリングしない（Caddy は `flush_interval -1`） |
 | 認証 | Basic 認証と Pi Web パスワードは**別の値**（`openssl rand -base64 32`） |
 | 専用ユーザー | エージェントはシェルを持つ。`~/.ssh` やクラウド資格情報を置かない |
-| Docker | Pi Web が 127.0.0.1 待ち受けなので Caddy は **`network_mode: host`**（ブリッジ経由では届かない） |
+| Docker | 必須ではない。Caddy を Docker で動かす場合は **`network_mode: host`**（Pi Web が 127.0.0.1 待ち受けのため）。EC2 はネイティブ Caddy で Docker 不要にできる（→ `ec2/README.md`） |
 | 作業ディレクトリ | Pi Web が見せるのは「選択した作業ディレクトリ」配下のみ。EC2 では `/home/piweb/work` などを作る |
 
 ---

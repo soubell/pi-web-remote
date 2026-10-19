@@ -23,7 +23,7 @@ DuckDNS を更新して追従させる。
 | AMI | **Ubuntu 24.04 LTS** | docker / NodeSource の手順が素直 |
 | インスタンス | **t3.small (2GB)** 以上 | Caddy の自前ビルド（xcaddy）が 1GB だと OOM しがち。t3.micro なら swap 必須（`user-data.sh` が 2GB 作成） |
 | Elastic IP | **使わない** | 代わりに DuckDNS 自動更新（このページの主題） |
-| EBS | **20GB gp3 以上** | Docker イメージ + npx キャッシュで 8GB は窮屈 |
+| EBS | **20GB gp3**（ネイティブ Caddy なら 8GB でも可） | Ubuntu 2.5 + Node/npm 1.5 + Docker 3 + swap 2 + 余裕 |
 | IAM ロール | **付けない** | エージェントが bash を実行できるため |
 
 **EIP なしのデメリット**（理解した上で選ぶ）:
@@ -177,6 +177,35 @@ systemd の `EnvironmentFile` 経由で Pi Web が読む。対応する変数名
 
 > 有効になったかは、UI のモデルピッカーにモデルが並ぶかで分かる。
 > 認証が無いと「モデルが 1 つも選べない」状態になる。
+
+### Docker を使わない（容量を抑える）
+
+Docker が必要な理由は **Caddy に DuckDNS プラグインを組み込むため**だけ。
+443 が外から届く EC2 では、**TLS-ALPN-01 で証明書が取れるのでプラグイン自体が不要**
+＝素の Caddy で済む。
+
+```bash
+sudo ./install.sh              # .env.caddy などは共通で作られる
+sudo ./install-caddy-native.sh # apt の caddy + Caddyfile.native で起動（Docker 版は停止）
+```
+
+| | Docker 版 | ネイティブ版 |
+| --- | --- | --- |
+| 証明書 | DNS-01（DuckDNS の TXT） | TLS-ALPN-01（443 のみ） |
+| 追加ディスク | **約 2〜3GB**（builder イメージ + Go ビルドキャッシュ） | **約 20MB**（.deb 17MB） |
+| 80 番 | 不要 | 不要 |
+| 443 到達性 | 不要（CGNAT でも可） | **必須** |
+| 向く環境 | 自宅・CGNAT | EC2 / VPS |
+
+Docker 版に戻すには:
+
+```bash
+sudo systemctl disable --now caddy-native
+cd ../duckdns && docker compose up -d --build
+```
+
+> ネイティブ版を使うなら `user-data.sh` の Docker 導入部分は不要になる
+> （`apt-get install -y docker-ce ...` の行を消してよい）。Node.js と Caddy だけで動く。
 
 ### 作業ディレクトリ（エージェントに触らせる場所）
 

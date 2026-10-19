@@ -230,8 +230,10 @@ cd ../duckdns && docker compose up -d --build
 `duckdns/.env.caddy` は 600（clone したユーザー所有）のまま。Caddy は直接読まず、
 `install-caddy-native.sh` が 0640 の写しを作る。
 
-> 設定変更は `sudo ./install.sh && sudo systemctl restart caddy-native`。
-> `Caddyfile.native` は `admin off` なので `caddy reload` は使えない。
+> **設定変更は `sudo ./install.sh` だけでよい。** ネイティブ Caddy が導入済みなら、
+> `install.sh` が `/etc/pi-web/caddy.env` と `/etc/pi-web/Caddyfile` を同期し、
+> `caddy validate` を通したうえで `caddy-native` を再起動する。
+> `Caddyfile.native` は `admin off` なので `caddy reload`（Admin API）は使えない。
 
 ### 作業ディレクトリ（エージェントに触らせる場所）
 

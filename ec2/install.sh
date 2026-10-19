@@ -149,6 +149,36 @@ fi
 chmod 600 ../duckdns/.env.caddy
 ok "../duckdns/.env.caddy"
 
+# ネイティブ Caddy は /etc/pi-web/caddy.env を読む（リポジトリ内の .env.caddy ではない）。
+# 導入済みならここで同期し、caddy validate と再起動まで行う（設定変更が反映されない事故を防ぐ）。
+SYNCED_CADDY=0
+if [[ -f /etc/systemd/system/caddy-native.service ]]; then
+  install -d -m 755 /etc/pi-web
+  if id -g caddy &>/dev/null; then
+    install -m 640 -o root -g caddy ../duckdns/.env.caddy /etc/pi-web/caddy.env
+  else
+    install -m 600 ../duckdns/.env.caddy /etc/pi-web/caddy.env
+  fi
+  install -m 644 ../duckdns/Caddyfile.native /etc/pi-web/Caddyfile
+  ok "/etc/pi-web/caddy.env を同期（ネイティブ Caddy）"
+
+  if command -v caddy >/dev/null 2>&1; then
+    # $2a$14$... のハッシュを source すると展開で壊れるので、データとして環境変数に載せる
+    (
+      while IFS= read -r _l || [[ -n "$_l" ]]; do
+        _l="${_l%$'\r'}"
+        [[ "$_l" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$_l" == *=* ]] || continue
+        _k="${_l%%=*}"; _v="${_l#*=}"
+        printf -v "$_k" '%s' "$_v"; export "${_k?}"
+      done < /etc/pi-web/caddy.env
+      caddy validate --config /etc/pi-web/Caddyfile >/dev/null
+    ) || die "Caddyfile の検証に失敗しました（設定は反映していません）"
+    ok "caddy validate"
+  fi
+  SYNCED_CADDY=1
+fi
+
 # (b) DuckDNS 更新スクリプト（root 実行）
 install -d -m 700 /etc/pi-web
 cat > /etc/pi-web/duckdns.env <<EOF
@@ -212,6 +242,12 @@ if /usr/local/bin/pi-web-duckdns-update; then :; else
   echo "  ! 更新に失敗しました。トークンとアウトバウンド 443 を確認してください" >&2
 fi
 
+# 起動中のネイティブ Caddy があれば設定を反映（バリデーションは上で通過済み）
+if [[ "${SYNCED_CADDY:-0}" -eq 1 ]] && systemctl is-active --quiet caddy-native 2>/dev/null; then
+  systemctl restart caddy-native
+  ok "caddy-native を再起動して設定を反映"
+fi
+
 cat <<MSG
 
 完了。配布内容は ec2/.env の 1 ファイルが正である。
@@ -229,5 +265,6 @@ cat <<MSG
   curl -sI https://${DUCKDNS_DOMAIN} | head -1     # -> HTTP/2 401
 
 設定を変えたいとき:
-  nano $(pwd)/.env   →   sudo ./install.sh   をもう一度実行（上書き配布）
+  nano $(pwd)/.env   →   sudo ./install.sh
+  （ネイティブ Caddy 導入済みなら /etc/pi-web/caddy.env も同期し、caddy-native を再起動する）
 MSG

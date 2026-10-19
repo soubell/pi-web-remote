@@ -14,7 +14,7 @@ PUBLIC_HOST="${PUBLIC_HOST:-}"          # 例: xxxx.ngrok-free.app (スキーム
 BASIC_USER="${BASIC_USER:-pi-user}"     # ngrok 側 Basic 認証のユーザー名
 PI_WEB_IDLE_TIMEOUT_MS="${PI_WEB_IDLE_TIMEOUT_MS:-0}"
 READY_TIMEOUT="${READY_TIMEOUT:-60}"    # Pi Web の起動待ち秒数
-VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-30}"  # Basic 認証の効きを確認するまでの秒数
+VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-30}"  # 公開 URL の検証待ち秒数
 
 : "${PI_WEB_PASSWORD:?PI_WEB_PASSWORD を設定してください}"
 : "${PUBLIC_HOST:?PUBLIC_HOST を設定してください (例: xxxx.ngrok-free.app)}"
@@ -93,30 +93,100 @@ echo "      公開 URL: https://${PUBLIC_HOST}"
 ngrok "${NGROK_ARGS[@]}" >/tmp/pi-web-ngrok.log 2>&1 &
 NGROK_PID=$!
 
-# --- 4) 認証が本当に効いているかを確認（効いていなければ中止） -----------------
+# --- 4) 認証が本当に効いているかを確認（fail-closed） -------------------------
+#
+#   2 段階で判定する。片方だけでは不十分:
+#     (a) 未認証アクセスが「ngrok の認証」で弾かれること
+#         ※ Pi Web 自身も Host 検証で 403 を返すため、403 だけでは区別できない。
+#           WWW-Authenticate ヘッダの有無で「Basic 認証による拒否」かを判別する。
+#     (b) 正しい認証情報を付ければ Pi Web まで到達すること（200/302）
+probe() {
+  # 引数は curl に渡す。標準出力: "<curl終了コード> <HTTPコード>"
+  # curl は接続失敗時にも -w で 000 を出すので、終了コードと混ぜずに扱う
+  local code rc=0
+  if code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@" 2>/dev/null)"; then rc=0; else rc=$?; fi
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
+  printf '%s %s' "$rc" "$code"
+}
+
+probe_auth_header() {
+  # 未認証で叩き、WWW-Authenticate ヘッダが付いていれば成功(=0)
+  curl -s -o /dev/null -D - --max-time 5 "$@" 2>/dev/null \
+    | tr -d '\r' | tr '[:upper:]' '[:lower:]' | grep -q '^www-authenticate:'
+}
+
 if [[ "$VERIFY_AUTH" -eq 1 ]]; then
-  echo -n "[4/4] Basic 認証の効きを確認"
-  CODE="000"
+  PUBLIC_URL="https://${PUBLIC_HOST}/"
+  echo -n "[4/4] 認証の効きを確認"
+  UNAUTH="000"; RC=1
   for _ in $(seq 1 "$VERIFY_TIMEOUT"); do
-    kill -0 "$NGROK_PID" 2>/dev/null || { echo; echo "ngrok が終了しました。" >&2; cat /tmp/pi-web-ngrok.log >&2; exit 1; }
-    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://${PUBLIC_HOST}/" 2>/dev/null || echo 000)"
-    [[ "$CODE" != "000" ]] && break
-    echo -n "."; sleep 2
+    if ! kill -0 "$NGROK_PID" 2>/dev/null; then
+      echo; echo "ngrok が終了しました。" >&2; cat /tmp/pi-web-ngrok.log >&2; exit 1
+    fi
+    read -r RC UNAUTH <<<"$(probe "$PUBLIC_URL")"
+    # 接続不能(000) と 5xx は「まだ準備できていない」として再試行
+    case "$UNAUTH" in 000|5??) echo -n "."; sleep 2; continue ;; esac
+    break
   done
   echo
-  case "$CODE" in
-    401|403)
-      echo "      ok (未認証アクセスは ${CODE} で遮断)"
+
+  if [[ "$UNAUTH" == "000" ]]; then
+    echo "      NG: ${VERIFY_TIMEOUT} 秒待っても公開 URL に接続できませんでした。中止します。" >&2
+    cat /tmp/pi-web-ngrok.log >&2
+    exit 1
+  fi
+
+  case "$UNAUTH" in
+    401)
+      echo "      ok (未認証アクセスは 401 で遮断)"
       ;;
-    200)
-      # 認証がかかっていない = 誰でも入れる状態。公開を続けない
-      echo "      NG: 認証なしで 200 が返りました。Basic 認証が効いていません。" >&2
-      echo "      （ngrok のバージョンで Traffic Policy の書式が異なる可能性があります）" >&2
-      echo "      ngrok のログ: /tmp/pi-web-ngrok.log" >&2
+    403)
+      if probe_auth_header "$PUBLIC_URL"; then
+        echo "      ok (未認証アクセスは 403 + WWW-Authenticate で遮断)"
+      else
+        echo "      NG: 403 が返りましたが WWW-Authenticate がありません。" >&2
+        echo "          ngrok の Basic 認証ではなく、Pi Web の Host 検証で弾かれている可能性があります。" >&2
+        echo "          PI_WEB_ALLOWED_HOSTS='${PUBLIC_HOST}' を確認してください。公開を中止します。" >&2
+        exit 1
+      fi
+      ;;
+    200|30?)
+      echo "      NG: 認証なしで ${UNAUTH} が返りました。Basic 認証が効いていません。公開を中止します。" >&2
+      echo "          ngrok のバージョンで Traffic Policy の書式が異なる可能性があります。" >&2
+      echo "          ngrok のログ: /tmp/pi-web-ngrok.log" >&2
       exit 1
       ;;
     *)
-      echo "      NG: 想定外の応答 (${CODE})。公開を中止します。" >&2
+      echo "      NG: 想定外の応答 (${UNAUTH})。公開を中止します。" >&2
+      cat /tmp/pi-web-ngrok.log >&2
+      exit 1
+      ;;
+  esac
+
+  # (b) 正しい認証情報で Pi Web まで到達できるか（ここまで通って初めて「公開してよい」）
+  echo -n "      認証ありで疎通確認"
+  AUTH="000"
+  for _ in $(seq 1 "$VERIFY_TIMEOUT"); do
+    read -r RC AUTH <<<"$(probe -u "${BASIC_USER}:${NGROK_BASIC_PASSWORD}" "$PUBLIC_URL")"
+    case "$AUTH" in 000|5??) echo -n "."; sleep 2; continue ;; esac
+    break
+  done
+  echo
+  case "$AUTH" in
+    200|30?|307|308)
+      echo "      ok (認証ありで ${AUTH} → Pi Web に到達)"
+      ;;
+    401)
+      echo "      NG: 認証ありでも 401。ユーザー名/パスワードを確認してください。中止します。" >&2
+      exit 1
+      ;;
+    403)
+      echo "      NG: 認証ありで 403。Pi Web の Host 検証の可能性があります。" >&2
+      echo "          PI_WEB_ALLOWED_HOSTS='${PUBLIC_HOST}' を確認してください。中止します。" >&2
+      exit 1
+      ;;
+    *)
+      echo "      NG: 想定外の応答 (${AUTH})。中止します。" >&2
       cat /tmp/pi-web-ngrok.log >&2
       exit 1
       ;;

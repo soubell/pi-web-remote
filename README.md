@@ -79,7 +79,7 @@ curl -s https://ifconfig.me; echo
 | --- | --- | --- | --- |
 | 想定環境 | EC2 / VPS | 自宅・VPS | どこでも（一時利用） |
 | ポート開放 | SG で 443 | ルータで 443 | 不要 |
-| CGNAT | ✅ 可 | ❌ 不可 | ✅ 可 |
+| CGNAT（ポート開放不可） | ❌ 公開自体が不可 | ❌ 不可 | ✅ 可（トンネルなので） |
 | ドメイン | DuckDNS（無料） | DuckDNS（無料） | `*.ngrok-free.app` |
 | HTTPS | Let's Encrypt（DNS-01） | Let's Encrypt（DNS-01） | ngrok |
 | 認証 | Basic 認証 + Pi Web パスワード | 同左 | 同左 |
@@ -173,6 +173,22 @@ PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.ap
     ▼
 [Pi Web 127.0.0.1:30141]  PI_WEB_PASSWORD（第2層）
 ```
+
+---
+
+## 証明書の取り方（HTTP-01 / TLS-ALPN-01 / DNS-01）
+
+Caddy は 3 通り。**どの方式でも 443 のインバウンドは必要**（サービスを公開する以上）。
+
+| 方式 | 追加で必要な開放 | プラグイン | 使う場面 |
+| --- | --- | --- | --- |
+| HTTP-01 | **80** | 不要 | 80 が ISP で通る場合 |
+| TLS-ALPN-01 | **なし**（443 を流用） | 不要 | **443 を公開するなら第一選択**（EC2 / VPS） |
+| DNS-01 | なし（TXT 検証） | **必要** | オリジンがトンネルの裏 / VPN・LAN 内公開 / ワイルドカード |
+
+本リポジトリの `ec2/`（ネイティブ Caddy）は **TLS-ALPN-01**、`duckdns/`（Docker）は
+**DNS-01**。CGNAT は経路の問題なので、どの証明書方式でも解決しない
+（その場合は `ngrok/` か Cloudflare Tunnel / Tailscale）。
 
 ---
 

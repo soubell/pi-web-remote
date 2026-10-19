@@ -1,0 +1,23 @@
+[Unit]
+Description=Pi Web (pi coding agent web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 専用ユーザーで実行（エージェントはこのユーザーの権限で bash を実行できる）
+User=piweb
+Group=piweb
+WorkingDirectory=/home/piweb
+# 秘密情報は EnvironmentFile に置く（chmod 600 / owner piweb）
+EnvironmentFile=/home/piweb/.config/pi-web/env
+ExecStart=/usr/bin/npx --yes @agegr/pi-web@latest -H 127.0.0.1 -p 30141 --no-open
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+# 待ち受けは -H 127.0.0.1 で既にループバック限定。
+# 注意: IPAddressDeny=any で外向きも塞ぐとモデル API に接続できなくなるので使わない。
+
+[Install]
+WantedBy=multi-user.target

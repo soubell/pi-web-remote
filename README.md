@@ -50,9 +50,10 @@ curl -s https://ifconfig.me; echo
 ## ディレクトリ
 
 ```
-duckdns/   DuckDNS + Caddy（Let's Encrypt DNS-01）+ Basic 認証   … 方式A
-ngrok/     ngrok + Basic 認証 + Pi Web パスワード                 … 方式C
-agent/     systemd ユーザーサービス（Pi Web の常駐化）
+duckdns/   DuckDNS + Caddy（Let's Encrypt DNS-01）+ Basic 認証   … 方式A（自宅/VPS/EC2 共通）
+ec2/       EC2 デプロイ手順・cloud-init・systemd ユニット        … 方式A を EC2 で動かす
+ngrok/     ngrok + Basic 認証 + Pi Web パスワード                 … 方式C（一時利用）
+agent/     systemd ユーザーサービス（汎用）
 ```
 
 ---

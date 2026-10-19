@@ -11,6 +11,47 @@
 
 ---
 
+## 前提: 何が必要で、何が不要か
+
+**pi（CLI）を別途インストールする必要はない。**
+`@agegr/pi-web` は pi のパッケージ群（`@earendil-works/pi-coding-agent` など）を
+依存として持っているので、`npx @agegr/pi-web` だけで UI とエージェントが揃う。
+本リポジトリの `user-data.sh` も pi を入れていない（意図的に）。
+
+| | 要否 | 補足 |
+| --- | --- | --- |
+| Node.js **22.19 以上** | 必須 | `@agegr/pi-web` の `engines` 指定 |
+| pi CLI（`@earendil-works/pi-coding-agent`） | **不要** | pi-web の依存として入る。CLI も併用したい人だけ別途導入 |
+| Pi Web 本体 | 不要 | `npx --yes @agegr/pi-web@latest` で毎回取得（`~/.npm` にキャッシュ） |
+| Docker | Caddy 方式で必須 | `ngrok/` だけなら不要 |
+| **モデルプロバイダの認証情報** | **必須（唯一の手動設定）** | 下記 |
+
+### モデルの認証（初回に 1 回だけ）
+
+どちらか。**どちらも `~/.pi/agent/auth.json` / 環境変数という pi 共通の仕組み**を使う。
+
+1. **Web UI から**（`pi` の `/login` 相当）
+   `https://<ドメイン>` にログイン → **Models** パネル → プロバイダを選んでログイン or API キー入力
+2. **環境変数で渡す**（CI / ヘッドレス向け）
+   `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` /
+   `DEEPSEEK_API_KEY` / `XAI_API_KEY` / `GROQ_API_KEY` / `MISTRAL_API_KEY` など
+
+   EC2 では `ec2/.env` に書けば `install.sh` が `/home/piweb/.config/pi-web/env` に
+   コピーする（systemd の `EnvironmentFile` 経由で Pi Web が読む）。
+
+### データの場所（実行ユーザーで決まる）
+
+```
+~/.pi/agent/                     既定。セッション・設定・auth.json
+  └─ sessions/<cwd>/<ts>_<uuid>.jsonl
+```
+
+EC2 では実行ユーザーが `piweb` なので **`/home/piweb/.pi/agent`**。
+既存の pi データを共有したい場合は `PI_CODING_AGENT_DIR` で場所を指定する
+（`ec2/.env` に書けば配布される。パーミッションに注意）。
+
+---
+
 ## まず 30 秒: どこで動かすか決める
 
 | 環境 | ポート開放 | 推奨する方式 |

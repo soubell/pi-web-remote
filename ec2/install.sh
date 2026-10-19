@@ -105,9 +105,25 @@ PI_WEB_ALLOWED_HOSTS=${DUCKDNS_DOMAIN}
 PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS}
 PI_WEB_NO_OPEN=1
 EOF
+# モデルプロバイダの API キー（.env に書かれているものだけ通す）
+PROVIDER_KEYS=(
+  ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY
+  DEEPSEEK_API_KEY XAI_API_KEY GROQ_API_KEY MISTRAL_API_KEY
+  MOONSHOT_API_KEY KIMI_API_KEY AI_GATEWAY_API_KEY
+)
+PASSED=()
+for k in "${PROVIDER_KEYS[@]}"; do
+  v="${!k:-}"
+  [[ -n "$v" ]] && { printf '%s=%s\n' "$k" "$v" >> /home/piweb/.config/pi-web/env; PASSED+=("$k"); }
+done
+[[ -n "${PI_CODING_AGENT_DIR:-}" ]] && {
+  printf 'PI_CODING_AGENT_DIR=%s\n' "$PI_CODING_AGENT_DIR" >> /home/piweb/.config/pi-web/env
+  PASSED+=("PI_CODING_AGENT_DIR")
+}
 chown piweb:piweb /home/piweb/.config/pi-web/env
 chmod 600 /home/piweb/.config/pi-web/env
 ok "/home/piweb/.config/pi-web/env"
+[[ ${#PASSED[@]} -gt 0 ]] && ok "プロバイダ設定を引き継ぎ: ${PASSED[*]}"
 
 # ec2/.env 自体も 600 にしておく（平文パスワードが入っているため）
 chmod 600 ./.env

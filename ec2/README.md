@@ -142,6 +142,45 @@ sudo systemctl enable --now pi-web
 sudo systemctl enable --now caddy     # docker compose up -d --build 相当
 ```
 
+### モデルの設定（初回だけ・これが最後の手動設定）
+
+Pi Web / pi 本体は依存として入るので、**pi CLI を別途インストールする必要はない**。
+必要なのは「どのモデルを、どの認証で使うか」だけ。
+
+**方法 A: ブラウザから（推奨・ログイン型プロバイダ向け）**
+
+`https://<ドメイン>` → Basic 認証 → Pi Web のパスワード → **Models** パネル →
+プロバイダを選んでログイン（ChatGPT サブスク、Claude、GitHub Copilot など）or API キー入力。
+認証情報は `/home/piweb/.pi/agent/auth.json` に保存される（`chmod 600`、`piweb` 所有）。
+
+**方法 B: `.env` に API キーを書く（ヘッドレス・再構築が楽）**
+
+```dotenv
+# ec2/.env
+ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
+```
+
+`sudo ./install.sh` を再実行すると `/home/piweb/.config/pi-web/env` にコピーされ、
+systemd の `EnvironmentFile` 経由で Pi Web が読む。対応する変数名は
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` /
+`DEEPSEEK_API_KEY` / `XAI_API_KEY` / `GROQ_API_KEY` / `MISTRAL_API_KEY` /
+`MOONSHOT_API_KEY` / `KIMI_API_KEY` / `AI_GATEWAY_API_KEY`。
+
+> 有効になったかは、UI のモデルピッカーにモデルが並ぶかで分かる。
+> 認証が無いと「モデルが 1 つも選べない」状態になる。
+
+### データの場所
+
+```
+/home/piweb/.pi/agent/         セッション・設定・auth.json（実行ユーザー piweb）
+/home/piweb/.config/pi-web/env 環境変数（install.sh が生成）
+```
+
+既存の pi データを共有したい場合のみ `ec2/.env` に `PI_CODING_AGENT_DIR=/home/ubuntu/.pi/agent`
+を書く（読み書き権限に注意。`piweb` から読めないと失敗する）。
+
+
 > `PI_WEB_PASSWORD` を後から確認したい場合は
 > `sudo cat /home/piweb/.config/pi-web/env`（root のみ）。
 >

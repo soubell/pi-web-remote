@@ -42,30 +42,36 @@ DuckDNS を更新して追従させる。
 
 ## 1. セキュリティグループ
 
-**443 は自分の IP だけ**。22 も同様。80 と 30141 は開けない。
+**443 は公開（0.0.0.0/0）、22 は自分の IP だけ。** 80 と 30141 は開けない。
 
 | タイプ | ポート | 送信元 | 用途 |
 | --- | --- | --- | --- |
-| HTTPS | 443 | 自分の IP `/32` | Pi Web |
+| HTTPS | 443 | **0.0.0.0/0** | Pi Web ＋ **Let's Encrypt の検証** |
 | HTTPS (UDP) | 443 | 同上 | HTTP/3（任意） |
-| SSH | 22 | 自分の IP | 管理 |
+| SSH | 22 | 自分の IP `/32` | 管理 |
+
+> **443 を自分の IP に絞ると証明書が取れない。** TLS-ALPN-01 は Let's Encrypt が
+> **世界複数地点から** 443 に接続して検証する（multi-perspective validation）。
+> 送信元を絞ると初回発行も約 60 日ごとの更新も失敗し、`journalctl -u caddy-native` に
+> `challenge failed` が並ぶ。443 は公開し、**認証で守る**のが前提
+> （Basic 認証＋Pi Web のパスワード）。
 
 ```bash
 SG=sg-xxxxxxxx
 MYIP=$(curl -s https://ifconfig.me)/32
 
+# 443 は 0.0.0.0/0（証明書検証のため必須）
 aws ec2 authorize-security-group-ingress --group-id $SG --ip-permissions \
-  "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=$MYIP,Description=\"pi-web\"}]" \
-  "IpProtocol=udp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=$MYIP,Description=\"pi-web-h3\"}]" \
-  "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$MYIP,Description=\"ssh\"}]"
+  "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=\"pi-web+acme\"}]"
 
-# 既定の 0.0.0.0/0 ルールが残っていれば閉じる
-aws ec2 revoke-security-group-ingress --group-id $SG \
-  --ip-permissions 'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]'
+# SSH は自分の IP だけ
+aws ec2 authorize-security-group-ingress --group-id $SG --ip-permissions \
+  "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$MYIP,Description=\"ssh\"}]"
 ```
 
-> 動的に IP が変わる回線から使うなら、443 を全世界に開けた上で Caddyfile の IP 制限ではなく
-> Basic 認証の強度で守る（32 文字ランダム）。厳密にやるなら SSM Session Manager 経由にする。
+> 443 が公開になるので、守りは **Basic 認証＋Pi Web のパスワード**（どちらも 32 文字ランダム）と
+> `pi-web` 専用ユーザー・IMDSv2 で担保する。IP 制限に戻すと証明書の更新が止まるのでやらない。
+> 管理経路を閉じたいなら、SSH の代わりに SSM Session Manager を使う（22 を開けなくて済む）。
 
 ---
 
@@ -431,7 +437,7 @@ sudo tar czf ~/pi-web-backup-$(date +%F).tar.gz -C /home/piweb .pi .config/pi-we
 
 ## 8. セキュリティ・チェックリスト
 
-- [ ] SG の 443 / 22 は自分の IP のみ。80 と 30141 は閉じている
+- [ ] SG は 443 が 0.0.0.0/0（証明書検証のため必須）、22 が自分の IP のみ。80 と 30141 は閉じている
 - [ ] IAM ロールを付けていない（または最小権限）。IMDSv2 必須（`HttpTokens=required`）
 - [ ] `piweb` ユーザーから `169.254.169.254` を遮断（`user-data.sh` に含む／更新スクリプトは root 実行なので影響なし）
 - [ ] Pi Web は `-H 127.0.0.1`、Basic 認証と Pi Web パスワードは別の値

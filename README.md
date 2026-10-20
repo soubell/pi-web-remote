@@ -176,7 +176,7 @@ PI_WEB_PASSWORD='...' NGROK_BASIC_PASSWORD='...' PUBLIC_HOST='xxxx.ngrok-free.ap
 
 ```
 [ブラウザ]
-    │ HTTPS 443（SG で送信元 IP を制限）
+    │ HTTPS 443（公開。証明書検証が世界中から来るため）
     ▼
 [Caddy (apt / systemd, Docker 不要)]  Let's Encrypt 証明書（TLS-ALPN-01 → 443 のみ）
     │             Basic 認証（第1層）
@@ -271,7 +271,7 @@ Node.js のバージョン / Pi Web の稼働と待ち受けアドレス / DuckD
 ## セキュリティ・チェックリスト
 
 - [ ] 443 以外を開けていない（80 / 30141 は不要）
-- [ ] 443 の送信元を自分の IP に制限（SG / ルータ / Caddy の `remote_ip`）
+- [ ] 22 の送信元を自分の IP に制限（**443 は Let's Encrypt の検証があるので公開必須**。守りは Basic 認証＋Pi Web パスワード）
 - [ ] Basic 認証と Pi Web パスワードが別の値・32 文字ランダム
 - [ ] `PI_WEB_ALLOWED_HOSTS` が実際のドメインと完全一致
 - [ ] `docker compose logs caddy` に 401 の連発が出ていないか時々見る

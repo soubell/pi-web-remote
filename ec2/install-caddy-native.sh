@@ -30,10 +30,9 @@ if ! command -v caddy >/dev/null; then
 fi
 ok "$(caddy version | head -1)"
 
-# apt 版の既定サービス / Docker 版が 443 を掴むので止める
-if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
-  systemctl disable --now caddy.service 2>/dev/null || true
-fi
+# apt 版の既定サービス（caddy.service）を止めるのは「設定の検証が通った後」。
+# ここで止めてしまうと、install.sh の caddy validate が失敗したときに
+# 何も動いていない状態で終わってしまう（→ [4/5] で停止する）。
 
 echo "[2/5] caddy-native.service を配置..."
 id -u caddy &>/dev/null || die "ユーザー caddy がありません（caddy パッケージの導入に失敗？）"
@@ -49,11 +48,42 @@ echo "[3/5] 設定の配布（install.sh: 検証してから一括反映）..."
 # 設定の中身は install.sh が一元管理する（ここで直接書くと検証前に本番を触ることになる）
 ( cd "$REPO_DIR/ec2" && ./install.sh )
 
-echo "[4/5] 起動..."
+echo "[4/5] 既存の Caddy を止めて、ネイティブ版を起動..."
+
+# 検証と反映が終わったので、ここで初めて既存サービスを止める（失敗しても被害が出ない）
+LEGACY_STOPPED=0
+if systemctl list-unit-files caddy.service >/dev/null 2>&1 \
+   && systemctl is-active --quiet caddy.service 2>/dev/null; then
+  systemctl disable --now caddy.service && LEGACY_STOPPED=1
+  ok "既存の caddy.service を停止・無効化"
+fi
+
+# 443 がまだ埋まっているなら Docker 版などが掴んでいる。無理に起動しない
+if command -v ss >/dev/null && ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
+  [[ "$LEGACY_STOPPED" -eq 1 ]] && sleep 2
+  if ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
+    echo "エラー: 443 が他のプロセスに使われています。設定は反映済みですが起動していません。" >&2
+    echo "       Docker 版 Caddy が動いている場合: cd ${REPO_DIR}/duckdns && docker compose down" >&2
+    echo "       占有元の確認: sudo ss -ltnp | grep :443" >&2
+    exit 1
+  fi
+fi
+
 systemctl daemon-reload
-systemctl enable --now caddy-native.service
-sleep 2
-systemctl --no-pager --lines=5 status caddy-native.service || true
+if ! systemctl enable --now caddy-native.service; then
+  echo "エラー: caddy-native.service を起動できませんでした。journalctl -u caddy-native を確認してください" >&2
+  exit 1
+fi
+# Type=simple は起動直後に落ちても成功を返すので、active になるまで待つ
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  systemctl is-active --quiet caddy-native.service && break
+  sleep 1
+done
+if ! systemctl is-active --quiet caddy-native.service; then
+  systemctl --no-pager --lines=15 status caddy-native.service || true
+  die "caddy-native.service が active になりませんでした（上記ログを確認）"
+fi
+ok "caddy-native.service 起動（active を確認）"
 
 echo "[5/5] 確認先の案内..."
 DOMAIN="$(grep -E '^DUCKDNS_DOMAIN=' "$REPO_DIR/duckdns/.env.caddy" | cut -d= -f2-)"

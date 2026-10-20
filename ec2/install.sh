@@ -117,6 +117,9 @@ id -u piweb &>/dev/null || die "ユーザー piweb がありません（user-dat
 [[ -f /etc/systemd/system/caddy-native.service ]] || \
   die "caddy-native.service がありません。先に sudo ./install-caddy-native.sh を実行してください"
 NATIVE=1
+# 初回導入かどうかで事後確認の厳しさを変える（初回は証明書取得待ちを許容する）
+CADDY_WAS_ACTIVE=0
+systemctl is-active --quiet caddy-native 2>/dev/null && CADDY_WAS_ACTIVE=1
 
 # --- 3) bcrypt ハッシュ ------------------------------------------------------
 echo "[1/6] Basic 認証のハッシュを生成..."
@@ -277,49 +280,79 @@ commit_file() {         # <src> <dest> <mode> [owner]
 }
 
 # 復元: cp -a で所有者・グループ・モード・時刻まで含めて戻す
+# サービスが「本当に動いているか」を待って確認する（Type=simple は直後に落ちても
+# start/restart が成功を返すため、戻り値だけでは足りない）
+wait_active() {          # <unit> <待ち秒>
+  local unit="$1" want="${2:-15}" i
+  for (( i=0; i<want; i++ )); do
+    systemctl is-active --quiet "$unit" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
 rollback_state() {
-  local reason="$1" entry dest bak u
+  local reason="$1" entry dest bak u i rc=0
   warn "反映に失敗したため元に戻します（理由: ${reason}）"
 
   # 1) 新設定で動いているサービスを止める（動いたまま古いファイルに戻すと不整合になる）
+  #    停止できなかったサービスがあると「新設定のプロセス＋旧ファイル」になり得るので、
+  #    失敗は握りつぶさず復元失敗として扱う。
   for u in ${STARTED_UNITS[@]+"${STARTED_UNITS[@]}"}; do
-    systemctl stop "$u" >/dev/null 2>&1 || true
+    if ! systemctl stop "$u" >/dev/null 2>&1; then
+      # 既に停止している場合も stop は成功するので、ここに来るのは異常
+      warn "$u を停止できませんでした（新設定のまま動いている可能性）"
+      rc=1
+    fi
   done
 
   # 2) ファイル復元（所有者・権限ごと）
   for entry in ${COMMITTED[@]+"${COMMITTED[@]}"}; do
     dest="${entry%%|*}"; bak="${entry##*|}"
     if [[ -n "$bak" && -f "$bak" ]]; then
-      if cp -a "$bak" "$dest" 2>/dev/null; then
-        :
-      else
+      if ! cp -a "$bak" "$dest" 2>/dev/null; then
         warn "復元に失敗しました: $dest"
-        ROLLBACK_FAILED=1
+        rc=1
       fi
     else
-      rm -f "$dest" 2>/dev/null || { warn "削除に失敗しました: $dest"; ROLLBACK_FAILED=1; }
+      rm -f "$dest" 2>/dev/null || { warn "削除に失敗しました: $dest"; rc=1; }
     fi
   done
 
-  # 3) unit を読み直し、旧設定で起動し直す（逆順）
-  systemctl daemon-reload >/dev/null 2>&1 || warn "daemon-reload に失敗"
-  local i
+  # 3) unit を読み直し、旧設定で起動し直す（依存の逆順 = pi-web → caddy-native）
+  if ! systemctl daemon-reload >/dev/null 2>&1; then
+    warn "daemon-reload に失敗（unit の変更が反映されていない可能性）"
+    rc=1
+  fi
   for (( i=${#STARTED_UNITS[@]}-1; i>=0; i-- )); do
     u="${STARTED_UNITS[$i]}"
-    if systemctl start "$u" >/dev/null 2>&1; then
-      ok "$u を旧設定で再起動"
+    if systemctl start "$u" >/dev/null 2>&1 && wait_active "$u" 15; then
+      ok "$u を旧設定で起動（active を確認）"
     else
       warn "$u を旧設定で起動できませんでした（要手動確認）"
-      ROLLBACK_FAILED=1
+      rc=1
     fi
   done
 
-  if [[ "$ROLLBACK_FAILED" -eq 1 ]]; then
+  if [[ "$rc" -eq 1 ]]; then
     warn "完全な復元に失敗しています。sudo ./check.sh と journalctl -u caddy-native / -u pi-web を確認してください"
   else
     ok "設定・権限・サービスを元の状態に復元しました（${#COMMITTED[@]} ファイル）"
   fi
-  return 0
+  return "$rc"
+}
+
+# 失敗時の共通出口。ロールバックの成否でメッセージと終了コードを変える
+fail_install() {         # <理由> <補足の確認先>
+  local reason="$1" hint="${2:-}"
+  if rollback_state "$reason"; then
+    echo "エラー: ${reason}（設定は元に戻しました）${hint:+。$hint}" >&2
+    exit 1
+  else
+    echo "エラー: ${reason}。さらに復元にも失敗しました。手動での復旧が必要です。" >&2
+    echo "       sudo ./check.sh / systemctl status caddy-native pi-web / journalctl -xe" >&2
+    exit 3
+  fi
 }
 
 commit_file "$STAGE/env.caddy"     "../duckdns/.env.caddy" 600
@@ -362,42 +395,57 @@ echo "[5/6] サービスを再起動..."
 # Type=simple のサービスは restart の戻り値だけでは「直後に落ちた」ことを見逃すので、
 # is-active が active になるまで少し待って確認する
 restart_unit() {         # <unit> <待ち秒>
-  local unit="$1" want="${2:-10}" base="$1" i
+  local unit="$1" want="${2:-15}"
+  STARTED_UNITS+=("$unit")
   if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-    STARTED_UNITS+=("$unit")      # ロールバック時に起動し直す対象
     ok "$unit は停止中（次回起動時に反映）"
     return 0
   fi
-  STARTED_UNITS+=("$unit")
-  systemctl restart "$unit" || { rollback_state "$unit の再起動コマンドが失敗"; return 1; }
-  for (( i=0; i<want; i++ )); do
-    systemctl is-active --quiet "$unit" 2>/dev/null && { ok "$unit を再起動して反映"; return 0; }
-    sleep 1
-  done
-  rollback_state "$unit が ${want} 秒以内に active にならない"
-  return 1
+  if ! systemctl restart "$unit" >/dev/null 2>&1; then
+    fail_install "$unit の再起動コマンドが失敗" "journalctl -u $unit を確認してください"
+  fi
+  if ! wait_active "$unit" "$want"; then
+    fail_install "$unit が ${want} 秒以内に active にならない" "journalctl -u $unit を確認してください"
+  fi
+  ok "$unit を再起動して反映（active を確認）"
 }
 
-restart_unit caddy-native 15 || die "caddy-native の起動に失敗しました（設定は元に戻しました）。journalctl -u caddy-native を確認してください"
-restart_unit pi-web 15       || die "pi-web の起動に失敗しました（設定は元に戻しました）。journalctl -u pi-web を確認してください"
+restart_unit caddy-native 15
+restart_unit pi-web 15
 systemctl enable --now pi-web-duckdns.timer >/dev/null 2>&1 && ok "pi-web-duckdns.timer 有効化"
 
 # --- 6) 事後確認（ローカルから実際に叩く） --------------------------------------
 echo "[6/6] 反映後の確認..."
 sleep 1
+VERIFIED="unverified"
 if systemctl is-active --quiet caddy-native 2>/dev/null; then
   CODE=""
   for i in 1 2 3; do
     if CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
         --resolve "${DUCKDNS_DOMAIN}:443:127.0.0.1" "https://${DUCKDNS_DOMAIN}/" 2>/dev/null)"; then :; else CODE="000"; fi
     [[ "$CODE" != "000" ]] && break
-    sleep 3
+    [[ "$i" -lt 3 ]] && sleep 3
   done
   case "$CODE" in
-    401|301|302|200) ok "ローカル HTTPS 応答 ${CODE}（Caddy → Pi Web 疎通）" ;;
-    502|503|504)     rollback_state "Caddy から Pi Web に到達できない（HTTP ${CODE}）"
-                     die "Pi Web が応答していません（設定は元に戻しました）。journalctl -u pi-web を確認してください" ;;
-    *)               warn "ローカル HTTPS 応答 ${CODE}。証明書の取得中なら数分待って https://${DUCKDNS_DOMAIN}/ を開いてください" ;;
+    200|301|302|401)
+      ok "ローカル HTTPS 応答 ${CODE}（Caddy → Pi Web 疎通）"
+      VERIFIED="verified"
+      ;;
+    502|503|504)
+      # Caddy は動いているが Pi Web に届かない = 確実に異常
+      fail_install "Caddy から Pi Web に到達できない（HTTP ${CODE}）" "journalctl -u pi-web を確認してください"
+      ;;
+    *)
+      # 000（証明書がまだ無い / TLS 失敗）や想定外のコード
+      if [[ "$CADDY_WAS_ACTIVE" -eq 0 ]]; then
+        warn "ローカル HTTPS 応答 ${CODE}（初回導入のため証明書取得待ちと判断）"
+        warn "数分後に https://${DUCKDNS_DOMAIN}/ を開いて確認してください。未確認のまま終了します"
+        VERIFIED="pending-cert"
+      else
+        # 既に動いていた構成の更新で応答が壊れた = 異常。旧設定に戻す
+        fail_install "更新後に HTTPS が正常応答しない（HTTP ${CODE}）" "journalctl -u caddy-native を確認してください"
+      fi
+      ;;
   esac
 fi
 
@@ -424,9 +472,17 @@ fi
 
 # 成功したのでバックアップを破棄
 COMMITTED=()
+if [[ "$VERIFIED" == "verified" ]]; then
+  RESULT="完了（HTTPS 応答まで確認済み）"
+elif [[ "$VERIFIED" == "pending-cert" ]]; then
+  RESULT="完了（ただし HTTPS は未確認: 証明書取得待ち。数分後にブラウザで確認）"
+else
+  RESULT="完了（HTTPS は未確認）"
+fi
 cat <<MSG
 
-完了。配布内容は ec2/.env の 1 ファイルが正である。
+${RESULT}
+配布内容は ec2/.env の 1 ファイルが正である。
 
 設定を変えたいとき:
   nano $(pwd)/.env   →   sudo ./install.sh

@@ -37,7 +37,32 @@ cleanup() {
     [[ -n "$p" && -e "$p" ]] && rm -rf "$p"
   done
 }
-trap cleanup EXIT
+
+# --- COMMIT を 1 つのトランザクションとして扱う ---------------------------------
+#   set -e で落ちる経路（想定外のコマンド失敗・SIGINT など）でも、
+#   「置き換えたファイルとサービスの状態」を必ず元に戻す。
+COMMIT_STARTED=0    # 1 になったらロールバック対象が存在する
+FINISHED=0          # 1 なら正常終了（ロールバック不要）
+
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if [[ "$COMMIT_STARTED" -eq 1 && "$FINISHED" -eq 0 ]]; then
+    echo >&2
+    warn "COMMIT 中に予期しない失敗（終了コード ${rc}）。ロールバックします"
+    if rollback_state "予期しない失敗（終了コード ${rc}）"; then
+      rc=1
+    else
+      rc=3
+    fi
+  fi
+  cleanup
+  exit "$rc"
+}
+trap on_exit EXIT
+# SIGINT/SIGTERM でも EXIT を通す（ロールバックを飛ばさない）
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- 0) 前提 ----------------------------------------------------------------
 if [[ $DRY_RUN -eq 0 ]]; then
@@ -260,6 +285,8 @@ ok "設定を生成（${STAGE}）"
 echo "[3/6] 設定を反映..."
 BACKUP_DIR="$STAGE/bak"; mkdir -p "$BACKUP_DIR"
 COMMITTED=()            # "dest|backup"（backup が空なら「新規作成」＝ロールバックで削除）
+CREATED_DIRS=()         # 新しく作ったディレクトリ（ロールバックで片付ける）
+COMMIT_STARTED=1
 STARTED_UNITS=()        # 旧設定で起動し直す必要があるユニット（依存順）
 ROLLBACK_FAILED=0
 
@@ -269,7 +296,10 @@ commit_file() {         # <src> <dest> <mode> [owner]
     bak="$BACKUP_DIR/$(echo "$dest" | tr '/' '_')"
     cp -a "$dest" "$bak"
   fi
-  install -d -m 755 "$(dirname "$dest")"
+  if [[ ! -d "$(dirname "$dest")" ]]; then
+    install -d -m 755 "$(dirname "$dest")"
+    CREATED_DIRS+=("$(dirname "$dest")")
+  fi
   if [[ -n "$owner" ]]; then
     install -m "$mode" -o "${owner%%:*}" -g "${owner##*:}" "$src" "$dest" 2>/dev/null \
       || install -m "$mode" "$src" "$dest"
@@ -334,6 +364,11 @@ rollback_state() {
     fi
   done
 
+  # 4) この実行で作ったディレクトリ（空になったものだけ）を片付ける
+  for (( i=${#CREATED_DIRS[@]}-1; i>=0; i-- )); do
+    rmdir "${CREATED_DIRS[$i]}" 2>/dev/null || true
+  done
+
   if [[ "$rc" -eq 1 ]]; then
     warn "完全な復元に失敗しています。sudo ./check.sh と journalctl -u caddy-native / -u pi-web を確認してください"
   else
@@ -345,7 +380,13 @@ rollback_state() {
 # 失敗時の共通出口。ロールバックの成否でメッセージと終了コードを変える
 fail_install() {         # <理由> <補足の確認先>
   local reason="$1" hint="${2:-}"
-  if rollback_state "$reason"; then
+  FINISHED=1             # on_exit で二重にロールバックしない
+  trap - EXIT; trap - INT; trap - TERM
+  local restored=0
+  # バックアップは STAGE 配下にあるので、cleanup より先にロールバックする
+  rollback_state "$reason" && restored=1
+  cleanup
+  if [[ "$restored" -eq 1 ]]; then
     echo "エラー: ${reason}（設定は元に戻しました）${hint:+。$hint}" >&2
     exit 1
   else
@@ -379,8 +420,9 @@ chmod 600 ./.env
 
 # --- 4) systemd ユニット -----------------------------------------------------
 echo "[4/6] systemd ユニットを配置..."
-install -m 755 update-duckdns.sh /usr/local/bin/pi-web-duckdns-update
 REPO_DIR="$(cd .. && pwd)"
+commit_file update-duckdns.sh /usr/local/bin/pi-web-duckdns-update 755
+ok "/usr/local/bin/pi-web-duckdns-update"
 for u in pi-web-duckdns.service pi-web-duckdns.timer pi-web.service; do
   [[ -f "$u" ]] || continue
   sed "s#@REPO_DIR@#${REPO_DIR}/duckdns#g" "$u" > "$STAGE/$u"
@@ -388,7 +430,7 @@ for u in pi-web-duckdns.service pi-web-duckdns.timer pi-web.service; do
   commit_file "$STAGE/$u" "/etc/systemd/system/$u" 644
   ok "/etc/systemd/system/$u"
 done
-systemctl daemon-reload
+systemctl daemon-reload || fail_install "systemctl daemon-reload に失敗" "systemctl status を確認してください"
 
 # --- 5) サービス再起動（依存順）+ 稼働確認 ------------------------------------
 echo "[5/6] サービスを再起動..."
@@ -412,7 +454,11 @@ restart_unit() {         # <unit> <待ち秒>
 
 restart_unit caddy-native 15
 restart_unit pi-web 15
-systemctl enable --now pi-web-duckdns.timer >/dev/null 2>&1 && ok "pi-web-duckdns.timer 有効化"
+if systemctl enable --now pi-web-duckdns.timer >/dev/null 2>&1; then
+  ok "pi-web-duckdns.timer 有効化"
+else
+  fail_install "pi-web-duckdns.timer を有効化できません" "systemctl status pi-web-duckdns.timer を確認してください"
+fi
 
 # --- 6) 事後確認（ローカルから実際に叩く） --------------------------------------
 echo "[6/6] 反映後の確認..."
@@ -470,8 +516,10 @@ else
   warn "DuckDNS の更新に失敗しました。トークンとアウトバウンド 443 を確認してください"
 fi
 
-# 成功したのでバックアップを破棄
+# 成功したのでバックアップを破棄（以後 on_exit はロールバックしない）
+FINISHED=1
 COMMITTED=()
+CREATED_DIRS=()
 if [[ "$VERIFIED" == "verified" ]]; then
   RESULT="完了（HTTPS 応答まで確認済み）"
 elif [[ "$VERIFIED" == "pending-cert" ]]; then

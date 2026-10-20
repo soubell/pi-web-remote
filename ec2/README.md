@@ -256,6 +256,27 @@ cd ../duckdns && docker compose up -d --build
 > 復元に失敗した場合は終了コード **3**（復元成功時の失敗は 1）で、
 > 「手動での復旧が必要」と明示する。
 >
+> **COMMIT は 1 つのトランザクション。** 置き換え対象は
+> （`caddy.env` / `Caddyfile` / `duckdns.env` / Pi Web の env / systemd unit /
+> `/usr/local/bin/pi-web-duckdns-update`）すべて `commit_file` を通す。
+> `set -e` で落ちる想定外の失敗（想定外のコマンド失敗・SIGINT/SIGTERM）も
+> `EXIT` トラップが拾ってロールバックするので、「一部だけ新しい」状態で終わらない。
+
+### 初回セットアップ（`install-caddy-native.sh`）のトランザクション
+
+初回だけは「既存 Caddy を止める → ネイティブ Caddy を起動する」という**切り替え**が入る。
+ここも 1 つのトランザクションとして扱う:
+
+1. `install.sh` を呼ぶ**前に** `/etc/pi-web` と unit、Pi Web の env を退避
+   （`install.sh` は成功時に自分のバックアップを破棄するため、外側で持つ必要がある）
+2. 既存 `caddy.service` の active/enabled を記録してから停止
+3. 443 の占有チェック → `caddy-native` 起動 → `active` 待ち → **443 を LISTEN しているか**まで確認
+4. どこかで失敗したら、**新 unit を止め、設定を退避から戻し、既存 `caddy.service` を再開**して
+   「元に戻しました」と明示して異常終了（`EXIT` トラップなので SIGINT でも同じ）
+
+検証済み: 起動失敗 / `active` にならない / 443 占有 / `install.sh` の検証失敗 のいずれでも
+**設定と既存サービスの両方が元に戻る**。
+>
 > つまり失敗しても「一部だけ新しい設定」「サービスだけ新設定」という状態にならない。
 >
 > `EnvironmentFile` はプロセス起動時にしか読まれないため、ファイルを書き換えただけでは

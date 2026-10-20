@@ -273,14 +273,26 @@ cd ../duckdns && docker compose up -d --build
    対象は `/etc/pi-web/*`、Pi Web の env、`/usr/local/bin/pi-web-duckdns-update`、
    systemd unit 3 本、`duckdns/.env.caddy`、およびこの script が置く `caddy-native.service`。
    **退避時に存在しなかったファイルは、復元時に削除する**（新規作成分を残さない）。
+   あわせて **`caddy-native` / `pi-web` / `pi-web-duckdns.timer` の active・enabled も記録**する
+   （`install.sh` が再起動・`enable --now` するため）。
 2. 既存 `caddy.service` の active/enabled を記録してから停止
 3. 443 の占有チェック → `caddy-native` 起動 → `active` 待ち → **443 を LISTEN しているか**まで確認
 4. どこかで失敗したら、**新 unit を止め、設定を退避から戻し、既存 `caddy.service` を再開**して
    「元に戻しました」と明示して異常終了（`EXIT` トラップなので SIGINT でも同じ）
 
-検証済み: 起動失敗 / `active` にならない / 443 占有 / `install.sh` の検証失敗 のいずれでも
-**9 個の書き込み先すべてと既存サービスが元に戻る**（新規作成されたファイルは削除）。
-復元自体に失敗した場合は「復元に失敗」と明示し、終了コード **3** で手動復旧を促す。
+復元の順序は「**新しい unit を止める → ファイルを戻す → daemon-reload →
+サービスを元の稼働状態に戻す（稼働していたものは必ず stop してから start し、`active` を確認）**」。
+ファイルとプロセスの食い違いを残さないため、稼働していたサービスは再起動して旧設定を読ませる。
+
+検証済み:
+- **すでにネイティブ版が稼働している状態から再実行して失敗** → `caddy-native` と `pi-web` が
+  `active` に復帰、`timer` は `enabled` のまま、ファイルは 9 個とも切り替え前と一致
+- 初回導入（ネイティブ停止中・旧 `caddy.service` 稼働）で失敗 → 旧 `caddy.service` が復帰し、
+  `caddy-native` は停止のまま
+- 443 占有 / 起動失敗 / `active` にならない / `install.sh` の検証失敗 のいずれでも同じ
+
+復元自体に失敗した場合（設定を戻せない・サービスが `active` に戻らない）は
+「復元に失敗」と明示し、終了コード **3** で手動復旧を促す。
 >
 > つまり失敗しても「一部だけ新しい設定」「サービスだけ新設定」という状態にならない。
 >

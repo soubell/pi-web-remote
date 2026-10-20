@@ -24,6 +24,16 @@ SNAP=""
 LEGACY_WAS_ACTIVE=0
 LEGACY_WAS_ENABLED=0
 
+# ユニットが active になるまで待つ（Type=simple は直後に落ちても start が成功する）
+wait_active() {          # <unit> <待ち秒>
+  local unit="$1" want="${2:-15}" i
+  for (( i=0; i<want; i++ )); do
+    systemctl is-active --quiet "$unit" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
 restore_switch() {
   local why="$1" t key bad=0
   SWITCH_DONE=1          # 二重に復元しない（明示的な復元後に EXIT が走るため）
@@ -60,6 +70,34 @@ restore_switch() {
       echo "  ! 設定を切り替え前の状態に戻しました" >&2
     else
       echo "  ! 設定の復元が一部失敗しています（手動確認が必要）" >&2
+    fi
+
+    # 2-b) サービスの稼働状態を元に戻す
+    #      「旧ファイル＋新設定を読んだプロセス」という食い違いを残さないため、
+    #      稼働していたものは必ず止めてから起動し直す。
+    if [[ -f "$SNAP/units" ]]; then
+      local u was_a was_e cur_e
+      while read -r u was_a was_e; do
+        [[ -n "$u" ]] || continue
+        systemctl stop "$u" >/dev/null 2>&1 || true
+        if [[ "$was_a" -eq 1 ]]; then
+          if systemctl start "$u" >/dev/null 2>&1 && wait_active "$u" 15; then
+            echo "  ✓ $u を元の稼働状態（active）に戻しました" >&2
+          else
+            echo "  ! $u を元の稼働状態に戻せませんでした" >&2
+            bad=1
+          fi
+        fi
+        # 有効化状態も戻す
+        cur_e=0; systemctl is-enabled --quiet "$u" 2>/dev/null && cur_e=1
+        if [[ "$was_e" -ne "$cur_e" ]]; then
+          if [[ "$was_e" -eq 1 ]]; then
+            systemctl enable "$u" >/dev/null 2>&1 || { echo "  ! $u を enable できませんでした" >&2; bad=1; }
+          else
+            systemctl disable "$u" >/dev/null 2>&1 || { echo "  ! $u を disable できませんでした" >&2; bad=1; }
+          fi
+        fi
+      done < "$SNAP/units"
     fi
   fi
 
@@ -162,6 +200,19 @@ if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
   systemctl is-active  --quiet caddy.service 2>/dev/null && LEGACY_WAS_ACTIVE=1
   systemctl is-enabled --quiet caddy.service 2>/dev/null && LEGACY_WAS_ENABLED=1
 fi
+
+# --- サービス（ユニット）の稼働状態も退避 --------------------------------------
+#   install.sh は caddy-native / pi-web を再起動し、timer を enable --now する。
+#   ここで状態を控えておかないと、切り替えに失敗してファイルだけ戻しても
+#   「新しい設定を読んだまま動いているプロセス」が残る（ファイルと状態が食い違う）。
+UNITS_TO_RESTORE=(caddy-native.service pi-web pi-web-duckdns.timer)
+: > "$SNAP/units"
+for _u in "${UNITS_TO_RESTORE[@]}"; do
+  _a=0; _e=0
+  systemctl is-active  --quiet "$_u" 2>/dev/null && _a=1
+  systemctl is-enabled --quiet "$_u" 2>/dev/null && _e=1
+  printf '%s %s %s\n' "$_u" "$_a" "$_e" >> "$SNAP/units"
+done
 SWITCH_STARTED=1
 
 id -u caddy &>/dev/null || die "ユーザー caddy がありません（caddy パッケージの導入に失敗？）"

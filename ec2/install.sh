@@ -162,6 +162,13 @@ PI_WEB_UPSTREAM="${PI_WEB_UPSTREAM:-127.0.0.1:30141}"
   die "DUCKDNS_DOMAIN の形式が不正: $DUCKDNS_DOMAIN（例: mypi.duckdns.org）"
 [[ "$DUCKDNS_TOKEN" =~ ^[A-Za-z0-9-]{8,64}$ ]] || die "DUCKDNS_TOKEN の形式が不正（8〜64 文字の英数字とハイフン）"
 [[ "$BASIC_AUTH_USER" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || die "BASIC_AUTH_USER の形式が不正"
+# 転送先はループバックのみ許可する。任意のホストを書けると
+# Caddy が全リクエストを外部へ中継してしまう（.env は root 管理だが、事故を防ぐ）。
+if [[ ! "$PI_WEB_UPSTREAM" =~ ^(127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$ ]]; then
+  die "PI_WEB_UPSTREAM は 127.0.0.1:<port> の形式にしてください（現在: ${PI_WEB_UPSTREAM}）"
+fi
+UP_PORT="${PI_WEB_UPSTREAM##*:}"
+(( UP_PORT >= 1 && UP_PORT <= 65535 )) || die "PI_WEB_UPSTREAM のポートが不正: ${UP_PORT}"
 [[ ${#BASIC_AUTH_PASSWORD} -ge 12 ]] || die "BASIC_AUTH_PASSWORD は 12 文字以上にしてください"
 [[ ${#PI_WEB_PASSWORD}   -ge 16 ]] || die "PI_WEB_PASSWORD は 16 文字以上にしてください"
 [[ "$BASIC_AUTH_PASSWORD" != "$PI_WEB_PASSWORD" ]] || die "2 つのパスワードは別の値にしてください"
@@ -189,7 +196,10 @@ echo "[1/6] Basic 認証のハッシュを生成..."
 hash_password() {
   local pw="$1"
   if command -v caddy >/dev/null 2>&1; then
-    printf '%s' "$pw" | caddy hash-password
+    # 改行で終えないと、caddy は行単位で読むため EOF で失敗する
+    # （しかも exit 0 で JSON のエラーを stdout に出すので、終了コードでは検出できない）
+    # パスワードを argv に載せないよう --plaintext は使わず stdin で渡す。
+    printf '%s\n' "$pw" | caddy hash-password --algorithm bcrypt
     return
   fi
   if ! command -v htpasswd >/dev/null 2>&1; then
@@ -205,8 +215,10 @@ if [[ $DRY_RUN -eq 1 ]]; then
   BASIC_AUTH_HASH='$2a$14$<dry-run では生成しません>'
   ok "bcrypt 生成はスキップ（--dry-run）"
 else
-  BASIC_AUTH_HASH="$(hash_password "$BASIC_AUTH_PASSWORD" | tr -d '\r')"
-  [[ "$BASIC_AUTH_HASH" == \$2[aby]\$* ]] || die "ハッシュ生成に失敗: $BASIC_AUTH_HASH"
+  BASIC_AUTH_HASH="$(hash_password "$BASIC_AUTH_PASSWORD" 2>/dev/null | tr -d '\r' | tail -1)"
+  if [[ ! "$BASIC_AUTH_HASH" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]]; then
+    die "bcrypt ハッシュを生成できませんでした（出力: ${BASIC_AUTH_HASH:-空}）。caddy か apache2-utils を確認してください"
+  fi
   ok "bcrypt 生成"
 fi
 
@@ -335,7 +347,14 @@ commit_file() {         # <src> <dest> <mode> [owner]
     cp -a "$dest" "$bak"
   fi
   if [[ ! -d "$(dirname "$dest")" ]]; then
-    install -d -m 755 "$(dirname "$dest")"
+    # 所有者を指定されたファイルは、親ディレクトリも同じ所有者で作る
+    # （root 所有のディレクトリだと、あとで piweb が自分の設定を書けない）
+    if [[ -n "$owner" ]]; then
+      install -d -m 755 -o "${owner%%:*}" -g "${owner##*:}" "$(dirname "$dest")" 2>/dev/null \
+        || install -d -m 755 "$(dirname "$dest")"
+    else
+      install -d -m 755 "$(dirname "$dest")"
+    fi
     CREATED_DIRS+=("$(dirname "$dest")")
   fi
   if [[ -n "$owner" ]]; then
@@ -539,8 +558,9 @@ if [[ "$WITH_DOCKER" -eq 1 ]]; then
   if ( cd ../duckdns && docker compose up -d >/dev/null 2>&1 ); then
     ok "Docker 版 Caddy を再作成して反映"
   else
-    rollback_state "Docker 版 Caddy の再作成に失敗"
-    die "Docker 版 Caddy の反映に失敗しました（設定は元に戻しました）。cd ../duckdns && docker compose up -d で確認してください"
+    # fail_install を使う（rollback_state + die だと EXIT トラップが二重にロールバックし、
+    # 「予期しない失敗」という無関係なメッセージになる）
+    fail_install "Docker 版 Caddy の再作成に失敗" "cd ../duckdns && docker compose up -d で確認してください"
   fi
 elif [[ -f ../duckdns/docker-compose.yml ]] && command -v docker >/dev/null 2>&1 \
      && docker ps --format '{{.Names}}' 2>/dev/null | grep -q caddy; then

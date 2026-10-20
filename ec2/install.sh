@@ -169,9 +169,16 @@ for _pw in "$BASIC_AUTH_PASSWORD" "$PI_WEB_PASSWORD"; do
   [[ "$_pw" =~ [[:space:]\"\'\$\\#\;] ]] && \
     die "パスワードに空白・引用符・\$・#・; は使えません（systemd/Caddyfile が壊れます）。openssl rand -base64 32 を使ってください"
 done
-id -u piweb &>/dev/null || die "ユーザー piweb がありません（user-data.sh か手動で作成してください）"
-[[ -f /etc/systemd/system/caddy-native.service ]] || \
-  die "caddy-native.service がありません。先に sudo ./install-caddy-native.sh を実行してください"
+# 前提チェック。ただし --dry-run は「これから何が書かれるか」の確認なので通す
+if [[ $DRY_RUN -eq 1 ]]; then
+  id -u piweb &>/dev/null || warn "ユーザー piweb がまだありません（実行時は必須）"
+  [[ -f /etc/systemd/system/caddy-native.service ]] || \
+    warn "caddy-native.service がまだありません（初回は sudo ./install-caddy-native.sh が配置します）"
+else
+  id -u piweb &>/dev/null || die "ユーザー piweb がありません（user-data.sh か手動で作成してください）"
+  [[ -f /etc/systemd/system/caddy-native.service ]] || \
+    die "caddy-native.service がありません。先に sudo ./install-caddy-native.sh を実行してください"
+fi
 NATIVE=1
 # 初回導入かどうかで事後確認の厳しさを変える（初回は証明書取得待ちを許容する）
 CADDY_WAS_ACTIVE=0

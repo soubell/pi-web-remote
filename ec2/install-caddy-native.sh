@@ -25,23 +25,45 @@ LEGACY_WAS_ACTIVE=0
 LEGACY_WAS_ENABLED=0
 
 restore_switch() {
-  local why="$1"
+  local why="$1" t key bad=0
   SWITCH_DONE=1          # 二重に復元しない（明示的な復元後に EXIT が走るため）
   echo "  ! 切り替えに失敗（${why}）。元に戻します" >&2
 
-  # 新 unit を止める（動いていれば）
+  # 1) 新 unit を止める（動いていれば）
   systemctl stop caddy-native.service >/dev/null 2>&1 || true
 
-  # 設定を戻す
+  # 2) 設定を退避から戻す。退避が無い＝新規作成されたファイルなので削除する
   if [[ -n "$SNAP" && -d "$SNAP" ]]; then
-    [[ -d "$SNAP/etc-pi-web" ]] && { rm -rf /etc/pi-web; cp -a "$SNAP/etc-pi-web" /etc/pi-web; }
-    [[ -f "$SNAP/caddy-native.service" ]] && cp -a "$SNAP/caddy-native.service" /etc/systemd/system/caddy-native.service
-    [[ -f "$SNAP/piweb-env" ]] && cp -a "$SNAP/piweb-env" /home/piweb/.config/pi-web/env
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    echo "  ! 設定を切り替え前の状態に戻しました" >&2
+    while IFS= read -r t; do
+      [[ -n "$t" ]] || continue
+      key="$(printf '%s' "$t" | tr '/' '_')"
+      if [[ -f "$SNAP/existed/$key" ]]; then
+        if cp -a "$SNAP/keep/$key" "$t" 2>/dev/null; then
+          :
+        else
+          echo "  ! 復元に失敗: $t" >&2; bad=1
+        fi
+      else
+        rm -f "$t" 2>/dev/null || { echo "  ! 削除に失敗: $t" >&2; bad=1; }
+      fi
+    done < "$SNAP/targets"
+
+    # 切り替え前に無かったディレクトリは、空なら片付ける
+    if [[ -f "$SNAP/newdirs" ]]; then
+      while IFS= read -r t; do
+        [[ -n "$t" ]] && rmdir "$t" 2>/dev/null
+      done < "$SNAP/newdirs"
+    fi
+
+    systemctl daemon-reload >/dev/null 2>&1 || { echo "  ! daemon-reload に失敗" >&2; bad=1; }
+    if [[ "$bad" -eq 0 ]]; then
+      echo "  ! 設定を切り替え前の状態に戻しました" >&2
+    else
+      echo "  ! 設定の復元が一部失敗しています（手動確認が必要）" >&2
+    fi
   fi
 
-  # 既存の caddy.service を元通りに
+  # 3) 既存の caddy.service を元通りに
   if [[ "$LEGACY_WAS_ACTIVE" -eq 1 ]]; then
     if [[ "$LEGACY_WAS_ENABLED" -eq 1 ]]; then
       systemctl enable --now caddy.service >/dev/null 2>&1 || systemctl start caddy.service >/dev/null 2>&1 || true
@@ -52,17 +74,36 @@ restore_switch() {
       echo "  ✓ 既存の caddy.service を再開しました" >&2
     else
       echo "  ! 既存の caddy.service を再開できませんでした。手動で確認してください" >&2
+      bad=1
     fi
   fi
+
   [[ -n "$SNAP" ]] && rm -rf "$SNAP"
+  return "$bad"
+}
+
+# 切り替え失敗の共通出口: 復元できたかでメッセージと終了コードを変える
+switch_fail() {          # <理由> <案内>
+  local why="$1" hint="${2:-}"
+  if restore_switch "$why"; then
+    echo "エラー: ${why}（元の状態に戻しました）${hint:+。$hint}" >&2
+    exit 1
+  else
+    echo "エラー: ${why}。さらに復元にも失敗しました。手動での復旧が必要です。" >&2
+    echo "       systemctl status caddy.service caddy-native / sudo ss -ltnp | grep :443" >&2
+    exit 3
+  fi
 }
 
 on_exit() {
   local rc=$?
   trap - EXIT
   if [[ "$SWITCH_STARTED" -eq 1 && "$SWITCH_DONE" -eq 0 ]]; then
-    restore_switch "予期しない失敗（終了コード ${rc}）"
-    rc=1
+    if restore_switch "予期しない失敗（終了コード ${rc}）"; then
+      rc=1
+    else
+      rc=3
+    fi
   fi
   [[ -n "$SNAP" && -d "$SNAP" ]] && rm -rf "$SNAP"
   exit "$rc"
@@ -95,12 +136,28 @@ echo "[2/5] caddy-native.service を配置..."
 # --- 切り替え前の状態を退避 ------------------------------------------------
 #   install.sh は成功時に自分のバックアップを破棄するので、その外側で
 #   「切り替え前の状態」をここで確保しておく（起動失敗時に戻すため）。
+#   対象は install.sh に申告させる（--list-targets）。ここで一覧を書くと必ずズレる。
 SNAP="$(mktemp -d /tmp/caddy-switch.XXXXXX)"
-[[ -d /etc/pi-web ]] && cp -a /etc/pi-web "$SNAP/etc-pi-web"
-[[ -f /etc/systemd/system/caddy-native.service ]] && \
-  cp -a /etc/systemd/system/caddy-native.service "$SNAP/caddy-native.service"
-[[ -f /home/piweb/.config/pi-web/env ]] && \
-  cp -a /home/piweb/.config/pi-web/env "$SNAP/piweb-env"
+mkdir -p "$SNAP/keep" "$SNAP/existed"
+TARGETS_FILE="$SNAP/targets"
+( cd "$REPO_DIR/ec2" && ./install.sh --list-targets ) > "$TARGETS_FILE" \
+  || die "install.sh --list-targets に失敗しました（退避対象を決められません）"
+# この script 自身が書き込む unit も対象に加える
+echo /etc/systemd/system/caddy-native.service >> "$TARGETS_FILE"
+sort -u -o "$TARGETS_FILE" "$TARGETS_FILE"
+
+: > "$SNAP/newdirs"
+while IFS= read -r _t; do
+  [[ -n "$_t" ]] || continue
+  _key="$(printf '%s' "$_t" | tr '/' '_')"
+  if [[ -e "$_t" ]]; then
+    cp -a "$_t" "$SNAP/keep/$_key" || die "退避に失敗しました: $_t"
+    : > "$SNAP/existed/$_key"
+  fi
+  _d="$(dirname "$_t")"
+  [[ -d "$_d" ]] || echo "$_d" >> "$SNAP/newdirs"
+done < "$TARGETS_FILE"
+
 if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
   systemctl is-active  --quiet caddy.service 2>/dev/null && LEGACY_WAS_ACTIVE=1
   systemctl is-enabled --quiet caddy.service 2>/dev/null && LEGACY_WAS_ENABLED=1
@@ -122,7 +179,7 @@ echo "[3/5] 設定の配布（install.sh: 検証してから一括反映）..."
 
 echo "[4/5] 既存の Caddy を止めて、ネイティブ版を起動..."
 
-systemctl daemon-reload || { restore_switch "daemon-reload に失敗"; die "daemon-reload に失敗しました"; }
+systemctl daemon-reload || switch_fail "daemon-reload に失敗" "systemctl status を確認してください"
 
 # 既存サービスを止める（ここから先は失敗時に元へ戻す）
 if [[ "$LEGACY_WAS_ACTIVE" -eq 1 ]]; then
@@ -130,24 +187,19 @@ if [[ "$LEGACY_WAS_ACTIVE" -eq 1 ]]; then
     ok "既存の caddy.service を停止・無効化"
     sleep 1
   else
-    restore_switch "既存の caddy.service を停止できない"
-    die "既存の Caddy を停止できませんでした。何も変更していません"
+    switch_fail "既存の caddy.service を停止できない" "何も変更できていません"
   fi
 fi
 
 # 443 がまだ埋まっているなら別プロセス（Docker 版など）が掴んでいる
 if command -v ss >/dev/null && ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
-  restore_switch "443 が他のプロセスに使われている"
-  echo "エラー: 443 が使用中です。切り替えを中止し、元の状態に戻しました。" >&2
-  echo "       Docker 版 Caddy が動いている場合: cd ${REPO_DIR}/duckdns && docker compose down" >&2
-  echo "       占有元の確認: sudo ss -ltnp | grep :443" >&2
-  exit 1
+  switch_fail "443 が他のプロセスに使われている" \
+    "Docker 版 Caddy が動いている場合は cd ${REPO_DIR}/duckdns && docker compose down、占有元は sudo ss -ltnp | grep :443"
 fi
 
 if ! systemctl enable --now caddy-native.service; then
   systemctl --no-pager --lines=15 status caddy-native.service || true
-  restore_switch "caddy-native.service を起動できない"
-  die "caddy-native.service を起動できませんでした（元の状態に戻しました）。journalctl -u caddy-native を確認してください"
+  switch_fail "caddy-native.service を起動できない" "journalctl -u caddy-native を確認してください"
 fi
 
 # Type=simple は起動直後に落ちても成功を返すので、active になるまで待つ
@@ -158,21 +210,21 @@ for i in $(seq 1 15); do
 done
 if [[ "$ACTIVE" -eq 0 ]]; then
   systemctl --no-pager --lines=15 status caddy-native.service || true
-  restore_switch "caddy-native.service が active にならない"
-  die "caddy-native.service が 15 秒以内に active になりませんでした（元の状態に戻しました）"
+  switch_fail "caddy-native.service が 15 秒以内に active にならない" "journalctl -u caddy-native を確認してください"
 fi
 
 # 443 を実際に掴めているか（証明書取得前でも LISTEN はする）
 if command -v ss >/dev/null && ! ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
-  restore_switch "443 を LISTEN していない"
-  die "caddy-native は起動しましたが 443 を LISTEN していません（元の状態に戻しました）"
+  switch_fail "caddy-native は起動したが 443 を LISTEN していない" "sudo ss -ltnp | grep :443 を確認してください"
 fi
 
 SWITCH_DONE=1
 ok "caddy-native.service 起動（active / 443 LISTEN を確認）"
 
 echo "[5/5] 確認先の案内..."
-DOMAIN="$(grep -E '^DUCKDNS_DOMAIN=' "$REPO_DIR/duckdns/.env.caddy" | cut -d= -f2-)"
+# 取れなくても止まらない（pipefail で落ちないように）
+DOMAIN="$(grep -E '^DUCKDNS_DOMAIN=' "$REPO_DIR/duckdns/.env.caddy" 2>/dev/null | cut -d= -f2- || true)"
+DOMAIN="${DOMAIN:-<ドメイン>}"
 cat <<MSG
 
 完了。次:

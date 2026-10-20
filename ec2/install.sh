@@ -17,13 +17,37 @@ cd "$(dirname "$0")"
 
 DRY_RUN=0
 WITH_DOCKER=0
+LIST_TARGETS=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run)            DRY_RUN=1 ;;
     --with-docker-caddy)  WITH_DOCKER=1 ;;
+    --list-targets)       LIST_TARGETS=1 ;;
     *) echo "不明な引数: $arg" >&2; exit 2 ;;
   esac
 done
+
+# この install.sh が書き込む（＝失敗時に元へ戻すべき）パスの一覧。
+# 呼び出し元（install-caddy-native.sh）はこれを使って退避を取る。
+# 一覧を呼び出し側にも書くと必ずズレるので、ここを唯一の真実にする。
+list_targets() {
+  local repo; repo="$(cd .. && pwd)"
+  cat <<EOF
+/etc/pi-web/caddy.env
+/etc/pi-web/Caddyfile
+/etc/pi-web/duckdns.env
+/home/piweb/.config/pi-web/env
+/usr/local/bin/pi-web-duckdns-update
+/etc/systemd/system/pi-web.service
+/etc/systemd/system/pi-web-duckdns.service
+/etc/systemd/system/pi-web-duckdns.timer
+${repo}/duckdns/.env.caddy
+EOF
+}
+if [[ "$LIST_TARGETS" -eq 1 ]]; then
+  list_targets
+  exit 0
+fi
 
 die() { echo "エラー: $*" >&2; exit 1; }
 ok()  { echo "  ✓ $*"; }

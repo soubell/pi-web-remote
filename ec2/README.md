@@ -267,15 +267,20 @@ cd ../duckdns && docker compose up -d --build
 初回だけは「既存 Caddy を止める → ネイティブ Caddy を起動する」という**切り替え**が入る。
 ここも 1 つのトランザクションとして扱う:
 
-1. `install.sh` を呼ぶ**前に** `/etc/pi-web` と unit、Pi Web の env を退避
-   （`install.sh` は成功時に自分のバックアップを破棄するため、外側で持つ必要がある）
+1. `install.sh` を呼ぶ**前に**、`install.sh --list-targets` が申告する**全書き込み先**を退避
+   （`install.sh` は成功時に自分のバックアップを破棄するため、外側で持つ必要がある。
+   一覧を呼び出し側にも書くと必ずズレるので、`install.sh` 側を唯一の真実にしている）。
+   対象は `/etc/pi-web/*`、Pi Web の env、`/usr/local/bin/pi-web-duckdns-update`、
+   systemd unit 3 本、`duckdns/.env.caddy`、およびこの script が置く `caddy-native.service`。
+   **退避時に存在しなかったファイルは、復元時に削除する**（新規作成分を残さない）。
 2. 既存 `caddy.service` の active/enabled を記録してから停止
 3. 443 の占有チェック → `caddy-native` 起動 → `active` 待ち → **443 を LISTEN しているか**まで確認
 4. どこかで失敗したら、**新 unit を止め、設定を退避から戻し、既存 `caddy.service` を再開**して
    「元に戻しました」と明示して異常終了（`EXIT` トラップなので SIGINT でも同じ）
 
 検証済み: 起動失敗 / `active` にならない / 443 占有 / `install.sh` の検証失敗 のいずれでも
-**設定と既存サービスの両方が元に戻る**。
+**9 個の書き込み先すべてと既存サービスが元に戻る**（新規作成されたファイルは削除）。
+復元自体に失敗した場合は「復元に失敗」と明示し、終了コード **3** で手動復旧を促す。
 >
 > つまり失敗しても「一部だけ新しい設定」「サービスだけ新設定」という状態にならない。
 >

@@ -116,7 +116,13 @@ restore_switch() {
     fi
   fi
 
-  [[ -n "$SNAP" ]] && rm -rf "$SNAP"
+  # 復元に失敗したらスナップショットを残す（手動復旧の唯一の材料になる）
+  if [[ "$bad" -eq 0 ]]; then
+    [[ -n "$SNAP" ]] && rm -rf "$SNAP"
+  else
+    echo "  ! 旧ファイルの退避を残しました: ${SNAP}" >&2
+    echo "  ! 手動で戻す場合: cp -a ${SNAP}/keep/... /元のパス   （ファイル名はパスの / を _ に置換）" >&2
+  fi
   return "$bad"
 }
 
@@ -136,6 +142,7 @@ switch_fail() {          # <理由> <案内>
 on_exit() {
   local rc=$?
   trap - EXIT
+  local keep=0
   if [[ "$SWITCH_STARTED" -eq 1 && "$SWITCH_DONE" -eq 0 ]]; then
     if restore_switch "予期しない失敗（終了コード ${rc}）"; then
       rc=1
@@ -143,7 +150,11 @@ on_exit() {
       rc=3
     fi
   fi
-  [[ -n "$SNAP" && -d "$SNAP" ]] && rm -rf "$SNAP"
+  # 復元に失敗した（exit 3）ときは、復旧材料としてスナップショットを残す
+  [[ "$rc" -eq 3 ]] && keep=1
+  if [[ "$keep" -eq 0 && -n "$SNAP" && -d "$SNAP" ]]; then rm -rf "$SNAP"; fi
+  [[ "$keep" -eq 1 && -n "$SNAP" && -d "$SNAP" ]] && \
+    echo "  ! 退避を残しました: ${SNAP}（手動復旧に使ってください）" >&2
   exit "$rc"
 }
 trap on_exit EXIT

@@ -55,8 +55,14 @@ warn(){ echo "  ! $*" >&2; }
 
 STAGE=""
 CLEANUP_PATHS=()
+KEEP_STAGE=0   # 1 なら一時ディレクトリ（＝バックアップ）を残す
 cleanup() {
   local p
+  if [[ "$KEEP_STAGE" -eq 1 ]]; then
+    [[ -n "$STAGE" && -d "$STAGE" ]] && \
+      echo "  ! バックアップを残しました: ${STAGE}/bak（手動復旧に使ってください）" >&2
+    return 0
+  fi
   for p in ${CLEANUP_PATHS[@]+"${CLEANUP_PATHS[@]}"}; do
     [[ -n "$p" && -e "$p" ]] && rm -rf "$p"
   done
@@ -78,6 +84,7 @@ on_exit() {
       rc=1
     else
       rc=3
+      KEEP_STAGE=1     # 復元に失敗 → 退避を残す
     fi
   fi
   cleanup
@@ -409,6 +416,7 @@ fail_install() {         # <理由> <補足の確認先>
   local restored=0
   # バックアップは STAGE 配下にあるので、cleanup より先にロールバックする
   rollback_state "$reason" && restored=1
+  [[ "$restored" -eq 0 ]] && KEEP_STAGE=1    # 復元に失敗 → 退避を残す
   cleanup
   if [[ "$restored" -eq 1 ]]; then
     echo "エラー: ${reason}（設定は元に戻しました）${hint:+。$hint}" >&2

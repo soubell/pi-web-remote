@@ -1,6 +1,6 @@
 #!/bin/bash
 # EC2 (Ubuntu 24.04 LTS) の初回起動時に流す cloud-init テンプレート
-#   - Docker / Node.js 22 / Pi Web 専用ユーザーを用意する
+#   - Node.js 22 と Pi Web 専用ユーザーを用意する（Docker は入れない）
 #   - Pi Web 自体の起動はしない（パスワード等の秘密は user-data に書かない）
 # 使い方: EC2 起動時の「高度な詳細 > ユーザーデータ」にこのファイルを貼る
 set -euxo pipefail
@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl gnupg git unzip
 
-# --- t3.micro (1GB) でも Caddy のビルドが通るように swap を 2GB 用意 -------------
+# --- t3.micro (1GB) でも npm install が通るように swap を 2GB 用意 ----------------
 if [ ! -f /swapfile ]; then
   fallocate -l 2G /swapfile
   chmod 600 /swapfile
@@ -18,17 +18,11 @@ if [ ! -f /swapfile ]; then
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# --- Docker + compose plugin ---------------------------------------------------
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-  > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-systemctl enable --now docker
-usermod -aG docker ubuntu || true
+# --- Docker は入れない ---------------------------------------------------------
+# 標準構成は「ネイティブ Caddy（apt）+ DuckDNS」で Docker を使わない。
+# 約 3GB の節約になり、8GB の EBS でも余裕ができる。
+# Docker 版 Caddy（../duckdns）を使う場合だけ、後から自分で導入する:
+#   curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
 
 # --- Node.js 22 (Pi Web は 22.19 以上が必要) -----------------------------------
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -

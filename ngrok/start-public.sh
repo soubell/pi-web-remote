@@ -113,11 +113,22 @@ NGROK_PID=$!
 #         ※ Pi Web 自身も Host 検証で 403 を返すため、403 だけでは区別できない。
 #           WWW-Authenticate ヘッダの有無で「Basic 認証による拒否」かを判別する。
 #     (b) 正しい認証情報を付ければ Pi Web まで到達すること（200/302）
+# 残り時間に応じた curl の上限と待機時間。期限を「厳密な上限」として扱うための補助。
+PROBE_MAX=5
+remaining() { local r=$(( VERIFY_DEADLINE - SECONDS )); (( r < 0 )) && r=0; echo "$r"; }
+# 期限直前に 5 秒の curl + 2 秒待機を始めると期限を最大 7 秒超えるので、残りに合わせて縮める
+limit_sleep() {   # <希望秒> を「残り時間」で頭打ちにして sleep
+  local want="$1" left; left="$(remaining)"
+  (( left <= 0 )) && return 0
+  (( want > left )) && want="$left"
+  sleep "$want"
+}
+
 probe() {
   # 引数は curl に渡す。標準出力: "<curl終了コード> <HTTPコード>"
   # curl は接続失敗時にも -w で 000 を出すので、終了コードと混ぜずに扱う
   local code rc=0
-  if code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@" 2>/dev/null)"; then rc=0; else rc=$?; fi
+  if code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$PROBE_MAX" "$@" 2>/dev/null)"; then rc=0; else rc=$?; fi
   [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
   printf '%s %s' "$rc" "$code"
 }
@@ -132,7 +143,8 @@ usable() {   # <rc> <code>
 
 probe_auth_header() {
   # 未認証で叩き、WWW-Authenticate ヘッダが付いていれば成功(=0)
-  curl -s -o /dev/null -D - --max-time 5 "$@" 2>/dev/null \
+  PROBE_MAX="$(remaining)"; (( PROBE_MAX > 5 )) && PROBE_MAX=5
+  curl -s -o /dev/null -D - --max-time "$PROBE_MAX" "$@" 2>/dev/null \
     | tr -d '\r' | tr '[:upper:]' '[:lower:]' | grep -q '^www-authenticate:'
 }
 
@@ -145,10 +157,11 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
     if ! kill -0 "$NGROK_PID" 2>/dev/null; then
       echo; echo "ngrok が終了しました。" >&2; cat /tmp/pi-web-ngrok.log >&2; exit 1
     fi
+    PROBE_MAX="$(remaining)"; (( PROBE_MAX > 5 )) && PROBE_MAX=5
     read -r RC UNAUTH <<<"$(probe "$PUBLIC_URL")"
     # curl が正常終了していない / 接続不能(000) / 5xx は「まだ準備できていない」として再試行
-    if ! usable "$RC" "$UNAUTH"; then echo -n "."; sleep 2; continue; fi
-    case "$UNAUTH" in 5??) echo -n "."; sleep 2; continue ;; esac
+    if ! usable "$RC" "$UNAUTH"; then echo -n "."; limit_sleep 2; continue; fi
+    case "$UNAUTH" in 5??) echo -n "."; limit_sleep 2; continue ;; esac
     break
   done
   echo
@@ -196,9 +209,10 @@ if [[ "$VERIFY_AUTH" -eq 1 ]]; then
   AUTH="000"
   VERIFY_DEADLINE=$(( SECONDS + VERIFY_TIMEOUT ))
   while (( SECONDS < VERIFY_DEADLINE )); do
+    PROBE_MAX="$(remaining)"; (( PROBE_MAX > 5 )) && PROBE_MAX=5
     read -r RC AUTH <<<"$(probe --config "$CURL_CFG" "$PUBLIC_URL")"
-    if ! usable "$RC" "$AUTH"; then echo -n "."; sleep 2; continue; fi
-    case "$AUTH" in 5??) echo -n "."; sleep 2; continue ;; esac
+    if ! usable "$RC" "$AUTH"; then echo -n "."; limit_sleep 2; continue; fi
+    case "$AUTH" in 5??) echo -n "."; limit_sleep 2; continue ;; esac
     break
   done
   rm -f "$CURL_CFG"; CURL_CFG=""

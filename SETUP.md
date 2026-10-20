@@ -26,7 +26,7 @@
 | ネットワーク | パブリック IP 自動割り当て（**EIP は不要**） |
 | IAM ロール | **付けない** |
 | メタデータ | **IMDSv2 必須**（`HttpTokens=required`） |
-| ユーザーデータ | `ec2/user-data.sh` の内容を貼る（Node22・専用ユーザー `piweb`・swap を作る。Docker は入れても入れなくても可） |
+| ユーザーデータ | `ec2/user-data.sh` の内容を貼る（Node22・専用ユーザー `piweb`・swap を作る。**Docker は入れない**） |
 
 セキュリティグループ（**443 と 22 を自分の IP だけに**。80 と 30141 は開けない）:
 
@@ -78,8 +78,11 @@ sudo systemctl enable --now pi-web
 sudo ./check.sh                 # 問題がないか確認
 ```
 
-> `install-caddy-native.sh` は内部で `install.sh` を呼ぶ（`.env.caddy` が無い場合）。
-> Docker 版 Caddy を使う場合だけ、先に `sudo ./install.sh` を単独で実行する。
+> `install-caddy-native.sh` は Caddy の導入 → unit 配置 → `install.sh`（設定配布）→ 起動まで行う。
+> **Docker は使わない。** これが標準構成（EC2 + ネイティブ Caddy + DuckDNS）。
+>
+> 設定の変更は今後 `sudo ./install.sh` だけでよい。検証 → 一括反映 → 再起動 → 事後確認まで行い、
+> 途中で失敗したらファイル・権限・サービスをすべて元に戻す。
 
 これで、URL は **`https://mypi.duckdns.org`**（DuckDNS）、証明書は Let's Encrypt、
 入口は Basic 認証、その奥が Pi Web のログイン、という状態になる。
@@ -124,7 +127,7 @@ Node.js のバージョン / Pi Web の稼働と待ち受け / DuckDNS の A レ
 | 項目 | 内容 |
 | --- | --- |
 | **EIP なし** | stop/start で IP が変わるが、起動時と 5 分ごとに DuckDNS を自動更新（`pi-web-duckdns.timer`） |
-| **Docker 不要** | Caddy はネイティブ（apt）。証明書は TLS-ALPN-01（443 のみ使用） |
+| **Docker 不要（標準）** | Caddy はネイティブ（apt / systemd）。証明書は TLS-ALPN-01（443 のみ使用） |
 | 設定の正 | `ec2/.env` 1枚。変えたら `sudo ./install.sh` を再実行 |
 | ポート | 443 と 22 だけ。80 も 30141 も開けない |
 | データ | `/home/piweb/.pi/agent`（セッション・認証情報） |

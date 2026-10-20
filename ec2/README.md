@@ -1,6 +1,7 @@
-# EC2 で動かす（Elastic IP なし）
+# EC2 で動かす（EC2 + ネイティブ Caddy + DuckDNS が標準）
 
-`../duckdns/` の構成（Caddy + Basic 認証 + Pi Web）を EC2 上に置く手順。
+**この構成が標準であり、他は非標準。** Caddy は apt の素のバイナリ（**Docker 不要**）、
+証明書は **TLS-ALPN-01（443 のみ）**、名前は **DuckDNS**。
 **EIP は使わない。** stop/start でパブリック IP が変わっても、**Pi Web の起動時と 5 分ごと**に
 DuckDNS を更新して追従させる。
 
@@ -9,10 +10,13 @@ DuckDNS を更新して追従させる。
       │ 443（SG で送信元 IP を制限）
       ▼
 [EC2]  パブリック IP は可変 → DuckDNS の A レコードを自動更新
-   ├ Caddy (Docker)  … Let's Encrypt / Basic 認証
+   ├ Caddy (apt / native, systemd caddy-native)  … Let's Encrypt / Basic 認証
    └ Pi Web (systemd, 専用ユーザー piweb, 127.0.0.1:30141)
         └ ExecStartPre で DuckDNS 更新（+ 5分ごとの timer）
 ```
+
+> Docker 版 Caddy（`../duckdns/`）は **DNS-01 が必要な環境向けの非標準オプション**。
+> 標準構成では使わない（→ 末尾「付録: Docker 版を使う場合」）。
 
 ---
 
@@ -20,10 +24,10 @@ DuckDNS を更新して追従させる。
 
 | 項目 | 推奨 | 理由 |
 | --- | --- | --- |
-| AMI | **Ubuntu 24.04 LTS** | docker / NodeSource の手順が素直 |
-| インスタンス | **t3.small (2GB)** 以上 | Caddy の自前ビルド（xcaddy）が 1GB だと OOM しがち。t3.micro なら swap 必須（`user-data.sh` が 2GB 作成） |
+| AMI | **Ubuntu 24.04 LTS** | NodeSource / Caddy 公式リポジトリの手順が素直 |
+| インスタンス | **t3.small (2GB)** 推奨（t3.micro + swap 2GB でも可） | Pi Web とエージェントを同時に動かすため |
 | Elastic IP | **使わない** | 代わりに DuckDNS 自動更新（このページの主題） |
-| EBS | **20GB gp3**（ネイティブ Caddy なら 8GB でも可） | Ubuntu 2.5 + Node/npm 1.5 + Docker 3 + swap 2 + 余裕 |
+| EBS | **8GB gp3** | Ubuntu 2.5 + Node/npm 1.5 + Caddy 0.02 + swap 2 |
 | IAM ロール | **付けない** | エージェントが bash を実行できるため |
 
 **EIP なしのデメリット**（理解した上で選ぶ）:
@@ -107,8 +111,8 @@ PI_WEB_PASSWORD=（別の32文字ランダム）
 | キー | 説明 |
 | --- | --- |
 | `DUCKDNS_DOMAIN` | DuckDNS で作ったドメイン。`PI_WEB_ALLOWED_HOSTS` にも自動で入る |
-| `DUCKDNS_TOKEN` | duckdns.org のトークン（A レコード更新と DNS-01 の両方に使う） |
-| `ACME_EMAIL` | Let's Encrypt の登録メール（空でも可） |
+| `DUCKDNS_TOKEN` | duckdns.org のトークン（A レコード更新に使う） |
+| `ACME_EMAIL` | Let's Encrypt の登録メール（省略時 `acme@<DUCKDNS_DOMAIN>`） |
 | `BASIC_AUTH_USER` | Caddy の Basic 認証ユーザー（省略時 `pi`） |
 | `BASIC_AUTH_PASSWORD` | **平文で書く**。install.sh が bcrypt に変換して配る |
 | `PI_WEB_PASSWORD` | Pi Web のログインパスワード。Basic 認証とは別の値にする |
@@ -122,8 +126,10 @@ openssl rand -base64 32
 
 ```
 ec2/.env
-   ├─► duckdns/.env.caddy              (600) Caddy / docker compose の env_file
-   ├─► /etc/pi-web/duckdns.env         (600) DuckDNS 更新（root 実行）
+   ├─► duckdns/.env.caddy              (600)          記録用（Caddy はこれを読まない）
+   ├─► /etc/pi-web/caddy.env           (640 root:caddy) Caddy が読む実体
+   ├─► /etc/pi-web/Caddyfile           (644)
+   ├─► /etc/pi-web/duckdns.env         (600)          DuckDNS 更新（root 実行）
    └─► /home/piweb/.config/pi-web/env  (600, piweb 所有) Pi Web / systemd
 ```
 
@@ -139,14 +145,9 @@ ec2/.env
 ### 起動
 
 ```bash
+sudo ./install-caddy-native.sh        # Caddy 導入 → 設定配布 → 起動まで 1 本
 sudo systemctl enable --now pi-web
-
-# Caddy はどちらか一方だけ
-sudo ./install-caddy-native.sh        # 推奨: ネイティブ（Docker なし）
-# sudo systemctl enable --now caddy   # Docker 版を使う場合のみ
-
-# 何が欠けているかを一発で確認
-sudo ./check.sh
+sudo ./check.sh                       # 何が欠けているかを一発で確認
 ```
 
 `check.sh` は Node.js のバージョン / pi-web サービスの稼働 / **30141 が 127.0.0.1 のみか** /
@@ -181,11 +182,11 @@ systemd の `EnvironmentFile` 経由で Pi Web が読む。対応する変数名
 > 有効になったかは、UI のモデルピッカーにモデルが並ぶかで分かる。
 > 認証が無いと「モデルが 1 つも選べない」状態になる。
 
-### Docker を使わない（容量を抑える）
+### なぜネイティブ Caddy なのか
 
-Docker が必要な理由は **Caddy に DuckDNS プラグインを組み込むため**だけ。
-443 が外から届く EC2 では、**TLS-ALPN-01 で証明書が取れるのでプラグイン自体が不要**
-＝素の Caddy で済む。
+Docker が必要になる理由は **Caddy に DuckDNS プラグインを組み込むため**だけ。
+443 が外から届く EC2 では **TLS-ALPN-01 で証明書が取れるのでプラグイン自体が不要**
+＝素の Caddy（apt）で済む。**これが標準。**
 
 ```bash
 sudo ./install-caddy-native.sh   # Caddy 導入 → 設定配布(install.sh) → 起動まで一括
@@ -205,15 +206,13 @@ sudo systemctl enable --now pi-web
 > トンネル/VPN 経由で配信する場合や `*.example.com` が必要な場合であって、
 > **CGNAT を解決する手段ではない**（CGNAT なら経路が無いので公開できない）。
 
-Docker 版に戻すには:
+Docker 版に切り替えるのは**非標準**（DNS-01 が要る場合のみ）:
 
 ```bash
 sudo systemctl disable --now caddy-native
 cd ../duckdns && docker compose up -d --build
+# 以降の設定変更は sudo ../ec2/install.sh --with-docker-caddy
 ```
-
-> ネイティブ版を使うなら `user-data.sh` の Docker 導入部分は不要になる
-> （`apt-get install -y docker-ce ...` の行を消してよい）。Node.js と Caddy だけで動く。
 
 ### Caddy の実行権限と設定の置き場所
 
@@ -235,24 +234,27 @@ cd ../duckdns && docker compose up -d --build
 > **STAGE**（本番には触らない）
 >
 > 1. すべての設定を一時ディレクトリに生成する
->    （`.env.caddy` / `duckdns.env` / Pi Web の env / Caddy の env と Caddyfile）
-> 2. その一時ファイルに対して `caddy validate`
-> 3. `caddy-native.service` があるのに `caddy` コマンドが無い場合は**ここで中止**
->    （検証できない設定は配置しない = fail-closed）
+>    （`.env.caddy` / `caddy.env` / `Caddyfile` / `duckdns.env` / Pi Web の env）
+> 2. その一時ファイルに対して `caddy validate`。**失敗したら何も置き換えない**
+> 3. `caddy` コマンドが無ければ**ここで中止**（検証できない設定は配置しない = fail-closed）
+> 4. API キーを入れた場合は外向き 443 の到達も確認（届かない設定を反映しない）
 >
 > **COMMIT**（STAGE がすべて通ってから）
 >
-> 4. 各ファイルを退避（`.bak`）してから置き換える
-> 5. `caddy-native` → `pi-web` の順に再起動して `EnvironmentFile` を読み直させる
-> 6. **どれかが失敗したら、置き換えた全ファイルを一括で元に戻す**
->    （一部だけ新しい設定が残る状態にしない）
+> 5. 各ファイルを**バックアップしてから**置き換える
+> 6. `caddy-native` → `pi-web` の順に再起動し、`is-active` が `active` になるまで待って確認
+> 7. ローカルから `https://<domain>/` を叩いて 401/200 が返るか確認（502 なら異常）
+> 8. **どれかで失敗したら、①新設定で動いたサービスを止め、②全ファイルを `cp -a` で
+>    所有者・権限ごと復元し、③旧設定で依存順に起動し直す**
+>
+> つまり失敗しても「一部だけ新しい設定」「サービスだけ新設定」という状態にならない。
 >
 > `EnvironmentFile` はプロセス起動時にしか読まれないため、ファイルを書き換えただけでは
 > 稼働中の Pi Web に反映されない（パスワード変更が効かない等）。
 > `Caddyfile.native` は `admin off` なので `caddy reload`（Admin API）は使えない。
 >
-> Docker 版 Caddy を使っている場合、`env_file` の変更はコンテナ再作成が必要。
-> `install.sh` は `docker compose up -d` まで試みる（失敗時は手動実行を案内）。
+> Docker 版 Caddy は**明示した時だけ**更新する（`--with-docker-caddy`）。
+> 指定して失敗した場合は警告で流さず、**全体を失敗扱いにしてロールバック**する。
 
 ### 作業ディレクトリ（エージェントに触らせる場所）
 
@@ -340,13 +342,13 @@ curl -sI -u 'pi:<パスワード>' https://mypi.duckdns.org | head -1
 | 症状 | 原因 / 対処 |
 | --- | --- |
 | stop/start 後に繋がらない | DuckDNS 更新がまだ。`sudo /usr/local/bin/pi-web-duckdns-update` → 1〜2分待つ（TTL 60s + キャッシュ） |
-| 証明書が取れない | SG で 443 が閉じている。`docker compose logs caddy` を確認。DNS が古いと TLS-ALPN-01 も失敗する |
-| `docker build` が Killed | メモリ不足（t3.micro）。swap 追加 or t3.small 以上 |
+| 証明書が取れない | SG で 443 が閉じている。`journalctl -u caddy-native -f` を確認。DNS が古いと TLS-ALPN-01 も失敗する |
+| `npm`/`caddy` が OOM で落ちる | メモリ不足（t3.micro）。swap 追加 or t3.small 以上 |
 | 更新が `KO` を返す | DuckDNS のトークン誤り。`/etc/pi-web/duckdns.env` を確認 |
 | 更新が「取得できませんでした」 | アウトバウンド 443 が塞がれている / NAT GW なしのプライベートサブネット |
 | `pi-web` が起動直後に落ちる | `journalctl -u pi-web -n 50`。Node 22 未満 / `PI_WEB_ALLOWED_HOSTS` 不一致 |
-| Caddy から Pi Web に届かない | `docker-compose.yml` が `network_mode: host` か確認（Pi Web は 127.0.0.1 のみ待ち受けのため、ブリッジ経由では届かない）。`ss -ltn \| grep 30141` が `127.0.0.1:30141` か |
-| 443 が使用中で Caddy が起動しない | `network_mode: host` はホストの 443 を直接使う。既存の nginx/apache を止めるか、`ss -ltnp \| grep :443` で占有元を確認 |
+| Caddy から Pi Web に届かない | Pi Web は `127.0.0.1:30141` のみ待ち受け。`ss -ltn \| grep 30141` が `127.0.0.1:30141` か、`PI_WEB_UPSTREAM` と一致しているかを確認 |
+| 443 が使用中で Caddy が起動しない | 既存の nginx/apache を止めるか、`ss -ltnp \| grep :443` で占有元を確認 |
 
 ---
 
@@ -354,9 +356,9 @@ curl -sI -u 'pi:<パスワード>' https://mypi.duckdns.org | head -1
 
 ```bash
 cd pi-web-remote && git pull
-sudo systemctl restart caddy-native  # ネイティブ（設定変更時。admin off なので reload 不可）
-# sudo systemctl restart caddy       # Docker 版を使っている場合
-sudo systemctl restart pi-web      # Pi Web（起動時に DuckDNS も更新される）
+sudo ./ec2/install.sh     # 設定の反映・再起動・事後確認まで 1 コマンドで行う
+# 手で再起動したいとき（通常は不要。admin off なので reload ではなく restart）
+sudo systemctl restart caddy-native pi-web
 ```
 
 **バックアップ**（Pi Web のデータは `/home/piweb/.pi/agent`）:
@@ -377,7 +379,7 @@ sudo tar czf ~/pi-web-backup-$(date +%F).tar.gz -C /home/piweb .pi .config/pi-we
 - [ ] `piweb` ユーザーから `169.254.169.254` を遮断（`user-data.sh` に含む／更新スクリプトは root 実行なので影響なし）
 - [ ] Pi Web は `-H 127.0.0.1`、Basic 認証と Pi Web パスワードは別の値
 - [ ] `/etc/pi-web/duckdns.env` は 600、`.env.caddy` も 600 で Git 管理外
-- [ ] `docker compose logs caddy` の 401 連発を時々確認
+- [ ] `journalctl -u caddy-native | grep 401` の連発を時々確認
 - [ ] EBS スナップショット or 上記 tar でバックアップ
 
 ---
@@ -389,3 +391,27 @@ sudo tar czf ~/pi-web-backup-$(date +%F).tar.gz -C /home/piweb .pi .config/pi-we
 | **DuckDNS 自動更新**（このページ） | 無料・URL 固定。切替時に数秒〜数十秒の穴 |
 | **Cloudflare Tunnel** | IP 変動の影響ゼロ。ポート開放も不要。常用ならこれが一番安定 |
 | **AWS Global Accelerator / ALB** | 固定 IP が得られるがコスト高（Pi Web 1個には過剰） |
+
+---
+
+## 付録: Docker 版 Caddy を使う場合（非標準）
+
+**標準はネイティブ Caddy。** ここは「443 を外に出せず DNS-01 でしか証明書が取れない」
+など、どうしても必要な場合だけ。
+
+```bash
+sudo systemctl disable --now caddy-native
+cd ../duckdns && docker compose up -d --build
+```
+
+以降の設定変更は Docker 更新も含めて明示する:
+
+```bash
+sudo ./install.sh --with-docker-caddy
+```
+
+- 指定しない限り、`install.sh` は Docker コンテナを触らない
+  （動いていれば「標準構成では更新しません」と警告するだけ）
+- 指定して `docker compose up -d` が失敗した場合は**警告で流さず全体を失敗扱い**にし、
+  設定ファイルとサービスをロールバックする
+- 容量は約 2〜3GB 増える（8GB の EBS だと厳しい。20GB を推奨）

@@ -17,7 +17,7 @@ ok()  { echo "  ✓ $*"; }
 REPO_DIR="$(cd .. && pwd)"
 [[ -f ./.env ]] || die "ec2/.env がありません。cp .env.example .env して値を入れてください"
 
-echo "[1/4] Caddy を公式リポジトリから導入..."
+echo "[1/5] Caddy を公式リポジトリから導入..."
 if ! command -v caddy >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
@@ -35,50 +35,27 @@ if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
   systemctl disable --now caddy.service 2>/dev/null || true
 fi
 
-echo "[2/4] 設定の配布（install.sh）..."
-if [[ ! -f "$REPO_DIR/duckdns/.env.caddy" ]]; then
-  ( cd "$REPO_DIR/ec2" && ./install.sh )
-else
-  ok "../duckdns/.env.caddy は既にあり（install.sh 実行済み）"
-fi
-[[ -f "$REPO_DIR/duckdns/.env.caddy" ]] || die "install.sh が .env.caddy を作れませんでした"
-
-echo "[3/4] caddy-native.service を配置..."
+echo "[2/5] caddy-native.service を配置..."
 id -u caddy &>/dev/null || die "ユーザー caddy がありません（caddy パッケージの導入に失敗？）"
+command -v caddy >/dev/null 2>&1 || die "caddy コマンドがありません（導入に失敗）"
 
-# 設定は /etc/pi-web に集約する（caddy ユーザーから読めるようにするため）
 install -d -m 755 /etc/pi-web /var/lib/caddy /var/log/caddy
 chown caddy:caddy /var/lib/caddy /var/log/caddy
-# .env.caddy は 600 (clone したユーザー所有) なので、caddy が読める 0640 root:caddy の写しを作る
-install -m 640 -o root -g caddy "$REPO_DIR/duckdns/.env.caddy" /etc/pi-web/caddy.env
-install -m 644 "$REPO_DIR/duckdns/Caddyfile.native" /etc/pi-web/Caddyfile
-ok "/etc/pi-web/caddy.env（root:caddy 0640）"
-ok "/etc/pi-web/Caddyfile"
-
-# 起動前に設定を検証（壊れた Caddyfile で再起動ループに入るのを防ぐ）
-#   ※ `source` すると BASIC_AUTH_HASH の `$` が展開されて壊れるのでデータとして読む
-(
-  set -e
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"
-    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    [[ "$line" == *=* ]] || continue
-    k="${line%%=*}"; v="${line#*=}"
-    printf -v "$k" '%s' "$v"; export "${k?}"
-  done < /etc/pi-web/caddy.env
-  caddy validate --config /etc/pi-web/Caddyfile >/dev/null
-) || die "Caddyfile の検証に失敗しました（caddy validate を直接実行して確認）"
-ok "caddy validate"
-
+# unit を先に置く。install.sh は「unit が無ければ中止」する設計なので順序が重要
 install -m 644 caddy-native.service /etc/systemd/system/caddy-native.service
 ok "/etc/systemd/system/caddy-native.service"
 
-echo "[4/4] 起動..."
+echo "[3/5] 設定の配布（install.sh: 検証してから一括反映）..."
+# 設定の中身は install.sh が一元管理する（ここで直接書くと検証前に本番を触ることになる）
+( cd "$REPO_DIR/ec2" && ./install.sh )
+
+echo "[4/5] 起動..."
 systemctl daemon-reload
 systemctl enable --now caddy-native.service
 sleep 2
 systemctl --no-pager --lines=5 status caddy-native.service || true
 
+echo "[5/5] 確認先の案内..."
 DOMAIN="$(grep -E '^DUCKDNS_DOMAIN=' "$REPO_DIR/duckdns/.env.caddy" | cut -d= -f2-)"
 cat <<MSG
 
@@ -91,9 +68,10 @@ cat <<MSG
   curl -sI https://${DOMAIN} | head -1     # -> HTTP/2 401
 
 設定を変えたとき（ec2/.env を編集後）:
-  sudo ./install.sh && sudo systemctl restart caddy-native pi-web
+  sudo ./install.sh        # 検証 → 反映 → 再起動 → 事後確認まで面倒を見る
+  # （再起動は install.sh が行うので、手で restart する必要はない）
 
-Docker 版に戻す場合:
+Docker 版に切り替える場合（非標準）:
   sudo systemctl disable --now caddy-native
   cd ${REPO_DIR}/duckdns && docker compose up -d --build
 MSG

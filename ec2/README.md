@@ -275,7 +275,9 @@ cd ../duckdns && docker compose up -d --build
    **退避時に存在しなかったファイルは、復元時に削除する**（新規作成分を残さない）。
    あわせて **`caddy-native` / `pi-web` / `pi-web-duckdns.timer` の active・enabled も記録**する
    （`install.sh` が再起動・`enable --now` するため）。
-2. 既存 `caddy.service` の active/enabled を記録してから停止
+2. 既存 `caddy.service` の active/enabled を記録してから停止。
+   すでに `caddy-native` が動いている（＝再実行）場合は、**443 の占有チェックの前に一度止める**
+   （自分のプロセスを「他のプロセスが 443 を使用中」と誤判定しないため。状態は記録済みで後で戻す）
 3. 443 の占有チェック → `caddy-native` 起動 → `active` 待ち → **443 を LISTEN しているか**まで確認
 4. どこかで失敗したら、**新 unit を止め、設定を退避から戻し、既存 `caddy.service` を再開**して
    「元に戻しました」と明示して異常終了（`EXIT` トラップなので SIGINT でも同じ）

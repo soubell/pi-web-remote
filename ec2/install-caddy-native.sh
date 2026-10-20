@@ -253,6 +253,14 @@ if [[ "$LEGACY_WAS_ACTIVE" -eq 1 ]]; then
   fi
 fi
 
+# 自分自身（caddy-native）が 443 を持っている場合は、一度止めてから占有チェックする。
+# 再実行時に「443 が使用中」と誤判定して必ず失敗するのを防ぐ（状態は退避済み）。
+if systemctl is-active --quiet caddy-native.service 2>/dev/null; then
+  ok "稼働中の caddy-native を一度停止（再起動はこの後）"
+  systemctl stop caddy-native.service || switch_fail "caddy-native を停止できない" "systemctl status caddy-native を確認してください"
+  sleep 1
+fi
+
 # 443 がまだ埋まっているなら別プロセス（Docker 版など）が掴んでいる
 if command -v ss >/dev/null && ss -ltn 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
   switch_fail "443 が他のプロセスに使われている" \

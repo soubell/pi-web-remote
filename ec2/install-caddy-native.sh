@@ -189,8 +189,18 @@ echo "[2/5] caddy-native.service を配置..."
 SNAP="$(mktemp -d /tmp/caddy-switch.XXXXXX)"
 mkdir -p "$SNAP/keep" "$SNAP/existed"
 TARGETS_FILE="$SNAP/targets"
-( cd "$REPO_DIR/ec2" && ./install.sh --list-targets ) > "$TARGETS_FILE" \
-  || die "install.sh --list-targets に失敗しました（退避対象を決められません）"
+# bash 経由で呼ぶ（clone 直後は実行ビットが無いことがあるため。exec ビットに依存しない）
+if ! ( cd "$REPO_DIR/ec2" && bash ./install.sh --list-targets ) > "$TARGETS_FILE" 2>/dev/null; then
+  cat >&2 <<'EOS'
+エラー: install.sh から退避対象の一覧を取得できませんでした。
+        (1) ec2/install.sh が古い可能性があります:  cd .. && git pull
+        (2) 単体で試して原因を見る:           bash ec2/install.sh --list-targets
+EOS
+  exit 1
+fi
+if [[ ! -s "$TARGETS_FILE" ]]; then
+  die "install.sh が退避対象を 1 つも返しませんでした（git pull して最新にしてください）"
+fi
 # この script 自身が書き込む unit も対象に加える
 echo /etc/systemd/system/caddy-native.service >> "$TARGETS_FILE"
 sort -u -o "$TARGETS_FILE" "$TARGETS_FILE"
@@ -237,7 +247,7 @@ ok "/etc/systemd/system/caddy-native.service"
 
 echo "[3/5] 設定の配布（install.sh: 検証してから一括反映）..."
 # 設定の中身は install.sh が一元管理する（ここで直接書くと検証前に本番を触ることになる）
-( cd "$REPO_DIR/ec2" && ./install.sh )
+( cd "$REPO_DIR/ec2" && bash ./install.sh )
 
 echo "[4/5] 既存の Caddy を止めて、ネイティブ版を起動..."
 
